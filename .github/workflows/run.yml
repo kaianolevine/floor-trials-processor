@@ -1,0 +1,43 @@
+name: Floor Trials Watcher
+
+on:
+  workflow_dispatch:
+  #schedule:
+    # Optional: run every hour (adjust as needed)
+    #- cron: "0 * * * *"
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 70  # ensures the 1-hour watcher can complete safely
+
+    env:
+      # Environment configs — can be overridden via GitHub Secrets or workflow dispatch inputs
+      GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+      WATCH_INTERVAL_SECONDS: 15
+      RUN_DURATION_MINUTES: 60
+      MONITOR_RANGE: "Current!C6:C11"
+
+    steps:
+      - name: 🧩 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 📦 Install Poetry
+        run: |
+          pip install poetry
+
+      - name: 🧰 Install dependencies
+        run: |
+          poetry install
+          # Or if kaiano-common-utils isn't in pyproject.toml, install directly:
+          poetry add git+https://github.com/kaianolevine/kaiano-common-utils.git
+
+      - name: 🏃 Run floor-trials processor
+        run: |
+          echo "Starting floor trials watcher..."
+          poetry run python -u src/floor_trials_processor/main.py
