@@ -10,8 +10,8 @@ import time
 from datetime import datetime, timedelta
 from typing import Any, List, Optional
 
+from kaiano_common_utils import google_sheets as sheets
 from kaiano_common_utils import logger as log
-from kaiano_common_utils.google_sheets import sheets
 
 
 def retry_on_exception(fn, *args, **kwargs):
@@ -83,142 +83,244 @@ def process_changes(
         log.debug(
             f"Processing changes on sheet '{sheet_name}', rows {start_row} to {end_row}, column {col}"
         )
-        # Fetch the full sheet data for rows of interest (E:I for rows start_row to end_row)
-        # We'll need to manipulate rows in the main sheet, so fetch E:I for all rows in range
-        # data_range = f"{sheet_name}!E{start_row}:I{end_row}"
-        # sheet_data = fetch_sheet_values(service, spreadsheet_id, data_range)
-        # For repacking, fetch all data from A:I (or A:Z, but we only process E:I) from row 6 downward
-        # all_data_range = f"{sheet_name}!A6:I"
-        # all_data = fetch_sheet_values(service, spreadsheet_id, all_data_range)
-        # Map from monitored cell index to row number in sheet
+
+        # Define allowed modification ranges for "Current" sheet
+        allowed_monitor_col = "C"
+        allowed_monitor_rows = range(6, 12)  # 6 to 11 inclusive
+        allowed_data_cols = ["E", "F", "G", "H", "I"]
+        allowed_data_rows = range(5, 13)  # 5 to 12 inclusive
+
+        def can_modify_range(range_str: str) -> bool:
+            # Parse range like "Current!F7:I7" or "Current!C6"
+            m_range = re.match(r"([^!]+)!(\w)(\d+):?(\w)?(\d+)?", range_str)
+            if not m_range:
+                return False
+            sheet = m_range.group(1)
+            if sheet != "Current":
+                # No restriction on other sheets
+                return True
+            start_col = m_range.group(2)
+            start_row_ = int(m_range.group(3))
+            end_col = m_range.group(4) if m_range.group(4) else start_col
+            end_row_ = int(m_range.group(5)) if m_range.group(5) else start_row_
+
+            # Convert columns to ordinals for range check
+            start_col_ord = ord(start_col.upper())
+            end_col_ord = ord(end_col.upper())
+
+            for col_ord in range(start_col_ord, end_col_ord + 1):
+                col_letter = chr(col_ord)
+                for row in range(start_row_, end_row_ + 1):
+                    if not (
+                        (
+                            col_letter == allowed_monitor_col
+                            and row in allowed_monitor_rows
+                        )
+                        or (
+                            col_letter in allowed_data_cols and row in allowed_data_rows
+                        )
+                    ):
+                        return False
+            return True
+
+        # Ensure "History" sheet exists before writing
+        HISTORY_SHEET_NAME = "History"
+        sheets.ensure_sheet_exists(service, spreadsheet_id, HISTORY_SHEET_NAME)
+
         actions_taken = False
         for idx, valrow in enumerate(current_values):
             val = valrow[0] if valrow else ""
             val_lc = str(val).strip().lower()
             row_num = start_row + idx
-            if val_lc in ("o", "x", "-"):
-                log.info(f"Action '{val_lc.upper()}' detected at row {row_num}")
-                # Calculate E:I range for this row
+            if val_lc == "o":
+                log.info(f"Action 'O' detected at row {row_num}")
+                fg_range = f"{sheet_name}!F{row_num}:I{row_num}"
+                fg_values = fetch_sheet_values(service, spreadsheet_id, fg_range)
+                fg_values = (
+                    fg_values[0] if fg_values and len(fg_values) > 0 else [""] * 4
+                )
+                timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                log.info(
+                    f"Inserting data into '{HISTORY_SHEET_NAME}' sheet at next open row: timestamp={timestamp}, values={fg_values}"
+                )
+                # Fetch current rows in History sheet to find next open row starting at row 6
+                history_range = f"{HISTORY_SHEET_NAME}!A6:E"
+                history_values = fetch_sheet_values(
+                    service, spreadsheet_id, history_range
+                )
+                append_row = 6 + len(history_values) if history_values else 6
+                new_row = [timestamp] + fg_values
+                log.debug(
+                    f"Appending to {HISTORY_SHEET_NAME} at row {append_row}: {new_row}"
+                )
+                service.spreadsheets().values().update(
+                    spreadsheetId=spreadsheet_id,
+                    range=f"{HISTORY_SHEET_NAME}!A{append_row}:E{append_row}",
+                    valueInputOption="RAW",
+                    body={"values": [new_row]},
+                ).execute()
+                clear_fi_range = f"{sheet_name}!F{row_num}:I{row_num}"
+                if can_modify_range(clear_fi_range):
+                    log.info(
+                        f"Clearing range {clear_fi_range} after processing 'O' action at row {row_num}"
+                    )
+                    service.spreadsheets().values().clear(
+                        spreadsheetId=spreadsheet_id, range=clear_fi_range, body={}
+                    ).execute()
+                else:
+                    log.warning(
+                        f"Attempted to clear out-of-bounds range {clear_fi_range}, skipping."
+                    )
+                # Always clear the triggering monitored cell (column C)
+                clear_c_range = f"{sheet_name}!{col}{row_num}"
+                if can_modify_range(clear_c_range):
+                    log.info(
+                        f"Clearing monitored cell {clear_c_range} after processing 'O' action at row {row_num}"
+                    )
+                    service.spreadsheets().values().clear(
+                        spreadsheetId=spreadsheet_id, range=clear_c_range, body={}
+                    ).execute()
+                else:
+                    log.warning(
+                        f"Attempted to clear out-of-bounds range {clear_c_range}, skipping."
+                    )
+                actions_taken = True
+            elif val_lc == "x":
+                log.info(
+                    f"Action 'X' detected at row {row_num} — clearing only the data in that row."
+                )
+                clear_fi_range = f"{sheet_name}!F{row_num}:I{row_num}"
+                if can_modify_range(clear_fi_range):
+                    log.info(
+                        f"Clearing data in range {clear_fi_range} for 'X' action at row {row_num}"
+                    )
+                    service.spreadsheets().values().clear(
+                        spreadsheetId=spreadsheet_id, range=clear_fi_range, body={}
+                    ).execute()
+                else:
+                    log.warning(
+                        f"Attempted to clear out-of-bounds range {clear_fi_range}, skipping."
+                    )
+                # Always clear the triggering monitored cell (column C)
+                clear_c_range = f"{sheet_name}!{col}{row_num}"
+                if can_modify_range(clear_c_range):
+                    log.info(
+                        f"Clearing monitored cell {clear_c_range} for 'X' action at row {row_num}"
+                    )
+                    service.spreadsheets().values().clear(
+                        spreadsheetId=spreadsheet_id, range=clear_c_range, body={}
+                    ).execute()
+                else:
+                    log.warning(
+                        f"Attempted to clear out-of-bounds range {clear_c_range}, skipping."
+                    )
+                actions_taken = True
+            elif val_lc == "-":
+                log.info(
+                    f"Moving E:I data from row {row_num} to row 12 and clearing original"
+                )
                 ei_range = f"{sheet_name}!E{row_num}:I{row_num}"
-                # Get E:I values for this row (may be missing)
                 ei_values = fetch_sheet_values(service, spreadsheet_id, ei_range)
                 ei_values = (
                     ei_values[0] if ei_values and len(ei_values) > 0 else [""] * 5
                 )
-                if val_lc == "o":
-                    log.info(
-                        f"Copying E:I data from row {row_num} to '{TARGET_SHEET_NAME}' sheet"
-                    )
-                    # Copy E:I data to TARGET_SHEET_NAME (append as new row)
-                    # Fetch current rows in target sheet to find append row
-                    target_range = f"{TARGET_SHEET_NAME}!A1:Z"
-                    target_values = fetch_sheet_values(
-                        service, spreadsheet_id, target_range
-                    )
-                    append_row = len(target_values) + 1 if target_values else 1
-                    log.debug(f"Appending to {TARGET_SHEET_NAME} at row {append_row}")
-                    # Write ei_values to target sheet at append_row
-                    log.debug(
-                        f"Writing values to {TARGET_SHEET_NAME}!A{append_row}:E{append_row}: {ei_values}"
-                    )
+                target_range = f"{sheet_name}!E12:I12"
+                if can_modify_range(target_range):
+                    log.debug(f"Writing values to {target_range}: {ei_values}")
                     service.spreadsheets().values().update(
                         spreadsheetId=spreadsheet_id,
-                        range=f"{TARGET_SHEET_NAME}!A{append_row}:E{append_row}",
+                        range=target_range,
                         valueInputOption="RAW",
                         body={"values": [ei_values]},
                     ).execute()
-                    log.debug(f"Deleting row {row_num} from main sheet '{sheet_name}'")
-                    # Delete the row in main sheet (row_num)
-                    service.spreadsheets().batchUpdate(
-                        spreadsheetId=spreadsheet_id,
-                        body={
-                            "requests": [
-                                {
-                                    "deleteDimension": {
-                                        "range": {
-                                            "sheetId": sheets.get_sheet_id(
-                                                service, spreadsheet_id, sheet_name
-                                            ),
-                                            "dimension": "ROWS",
-                                            "startIndex": row_num - 1,
-                                            "endIndex": row_num,
-                                        }
-                                    }
-                                }
-                            ]
-                        },
-                    ).execute()
-                    actions_taken = True
-                elif val_lc == "x":
-                    log.info(f"Deleting row {row_num} from main sheet '{sheet_name}'")
-                    # Just delete the row in main sheet (row_num)
-                    service.spreadsheets().batchUpdate(
-                        spreadsheetId=spreadsheet_id,
-                        body={
-                            "requests": [
-                                {
-                                    "deleteDimension": {
-                                        "range": {
-                                            "sheetId": sheets.get_sheet_id(
-                                                service, spreadsheet_id, sheet_name
-                                            ),
-                                            "dimension": "ROWS",
-                                            "startIndex": row_num - 1,
-                                            "endIndex": row_num,
-                                        }
-                                    }
-                                }
-                            ]
-                        },
-                    ).execute()
-                    actions_taken = True
-                elif val_lc == "-":
-                    log.info(
-                        f"Moving E:I data from row {row_num} to row 6 and clearing original"
+                else:
+                    log.warning(
+                        f"Attempted to update out-of-bounds range {target_range}, skipping."
                     )
-                    # Move E:I data to row 6 (top active row), clear original
-                    # Write ei_values to E6:I6
-                    log.debug(f"Writing values to {sheet_name}!E6:I6: {ei_values}")
-                    service.spreadsheets().values().update(
-                        spreadsheetId=spreadsheet_id,
-                        range=f"{sheet_name}!E6:I6",
-                        valueInputOption="RAW",
-                        body={"values": [ei_values]},
-                    ).execute()
-                    log.debug(f"Clearing E:I in original row {row_num}")
-                    # Clear E:I in original row
+                log.debug(f"Clearing E:I in original row {row_num}")
+                if can_modify_range(ei_range):
                     service.spreadsheets().values().clear(
                         spreadsheetId=spreadsheet_id, range=ei_range, body={}
                     ).execute()
-                    actions_taken = True
-        # After all actions, repack non-empty rows upward (preserving order)
+                else:
+                    log.warning(
+                        f"Attempted to clear out-of-bounds range {ei_range}, skipping."
+                    )
+                # Always clear the triggering monitored cell (column C)
+                clear_c_range = f"{sheet_name}!{col}{row_num}"
+                if can_modify_range(clear_c_range):
+                    log.info(
+                        f"Clearing monitored cell {clear_c_range} for '-' action at row {row_num}"
+                    )
+                    service.spreadsheets().values().clear(
+                        spreadsheetId=spreadsheet_id, range=clear_c_range, body={}
+                    ).execute()
+                else:
+                    log.warning(
+                        f"Attempted to clear out-of-bounds range {clear_c_range}, skipping."
+                    )
+                actions_taken = True
+            elif str(val).strip() != "":
+                # Unrecognized but non-empty value: just clear the triggering cell (column C)
+                clear_c_range = f"{sheet_name}!{col}{row_num}"
+                if can_modify_range(clear_c_range):
+                    log.info(
+                        f"Clearing monitored cell {clear_c_range} for unrecognized value '{val}' at row {row_num}"
+                    )
+                    service.spreadsheets().values().clear(
+                        spreadsheetId=spreadsheet_id, range=clear_c_range, body={}
+                    ).execute()
+                else:
+                    log.warning(
+                        f"Attempted to clear out-of-bounds range {clear_c_range}, skipping."
+                    )
+                actions_taken = True
+            else:
+                # Empty cell: nothing to do
+                continue
+        # After all actions, compact E5:I12 upward (preserving order)
         if actions_taken:
-            log.info("Repacking rows after processing actions")
-            # Fetch all data again (A6:I)
-            repack_range = f"{sheet_name}!A6:I"
-            repack_data = fetch_sheet_values(service, spreadsheet_id, repack_range)
-            # Only keep rows with any non-empty value in E:I
-            non_empty_rows = [
-                row for row in repack_data if any(cell for cell in row[4:9] if cell)
-            ]
-            log.debug(f"Non-empty rows before repacking: {len(non_empty_rows)}")
-            # Pad to original number of rows (optional)
-            max_rows = len(repack_data)
-            while len(non_empty_rows) < max_rows:
-                non_empty_rows.append([""] * 9)
-            log.debug(
-                f"Writing {len(non_empty_rows)} rows back to {sheet_name}!A6:I after repacking"
+            compaction_range = f"{sheet_name}!E5:I12"
+            compaction_data = fetch_sheet_values(
+                service, spreadsheet_id, compaction_range
             )
-            # Write back packed rows to A6:I
-            service.spreadsheets().values().update(
-                spreadsheetId=spreadsheet_id,
-                range=repack_range,
-                valueInputOption="RAW",
-                body={"values": non_empty_rows},
-            ).execute()
-            log.info("Repacking complete.")
+            # Ensure all rows have length 5 (E:I)
+            compaction_data = [
+                row + [""] * (5 - len(row)) if len(row) < 5 else row[:5]
+                for row in compaction_data
+            ]
+            # Identify non-empty rows (at least one non-empty cell)
+            non_empty_rows = [
+                row for row in compaction_data if any(str(cell).strip() for cell in row)
+            ]
+            empty_rows = [
+                row
+                for row in compaction_data
+                if not any(str(cell).strip() for cell in row)
+            ]
+            log.info(
+                f"Compaction: found {len(non_empty_rows)} non-empty rows and {len(empty_rows)} empty rows in E5:I12"
+            )
+            # Pad with empty rows so total rows matches original
+            total_rows = len(compaction_data)
+            compacted = list(non_empty_rows)  # preserve order
+            while len(compacted) < total_rows:
+                compacted.append([""] * 5)
+            # Only write if allowed by can_modify_range
+            if can_modify_range(compaction_range):
+                service.spreadsheets().values().update(
+                    spreadsheetId=spreadsheet_id,
+                    range=compaction_range,
+                    valueInputOption="RAW",
+                    body={"values": compacted},
+                ).execute()
+                log.info("Compaction complete: E5:I12 compacted upward.")
+            else:
+                log.warning(
+                    f"Attempted to update out-of-bounds range {compaction_range}, skipping compaction."
+                )
         else:
-            log.info("No actions taken; skipping repacking.")
+            log.info("No actions taken; skipping compaction.")
     except Exception as e:
         log.error(f"Error in process_changes: {e}", exc_info=True)
     log.info("Processing complete.")
@@ -235,8 +337,6 @@ def run_watcher(
     service = sheets.get_sheets_service()
 
     end_time = datetime.utcnow() + timedelta(minutes=duration_minutes)
-    previous_values: Optional[List[List[Any]]] = None
-
     log.info(
         f"Watcher starting: spreadsheet_id={spreadsheet_id}, range={sheet_range}, "
         f"interval={interval_seconds}s, duration={duration_minutes}min, monitor_range={monitor_range}"
@@ -249,11 +349,17 @@ def run_watcher(
         start = time.time()
         try:
             current_values = fetch_sheet_values(service, spreadsheet_id, monitor_range)
-            if detect_changes(previous_values, current_values):
+            # Instead of change detection, process if any monitored cell is non-empty
+            any_nonempty = any(
+                (row and str(row[0]).strip() != "") for row in current_values
+            )
+            if any_nonempty:
+                log.debug(
+                    "Detected at least one non-empty monitored cell; processing changes."
+                )
                 process_changes(service, spreadsheet_id, monitor_range, current_values)
             else:
-                log.debug("No changes detected in current poll iteration")
-            previous_values = current_values
+                log.debug("No non-empty values in monitored cells this poll iteration.")
         except Exception as e:
             log.error(f"Error during polling: {e}", exc_info=True)
         elapsed = time.time() - start
@@ -269,7 +375,7 @@ def run_watcher(
 
 def main():
     log.info("Starting main function")
-    SHEET_ID = "1SvAEJ_fIk3BWJ6MGvPEqfSmq2a3WS7u16jFpxd5pAZ4"
+    SHEET_ID = "1TW21azr-P8PlvGyEQ7MCYXq3unG5JkdgO4pcV2j75Hw"
     SHEET_RANGE = "Current!A:Z"
     INTERVAL_SECONDS = int("15")
     DURATION_MINUTES = int("60")
