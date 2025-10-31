@@ -13,6 +13,50 @@ from typing import Any, List, Optional
 from kaiano_common_utils import google_sheets as sheets
 from kaiano_common_utils import logger as log
 
+# ---------------------------------------------------------------------
+# CONFIGURATION CONSTANTS
+# ---------------------------------------------------------------------
+# Google Sheet ID for the Floor Trials Processor
+SHEET_ID = "1TW21azr-P8PlvGyEQ7MCYXq3unG5JkdgO4pcV2j75Hw"
+# Main range to monitor in the Current sheet (all columns)
+SHEET_RANGE = "Current!A:Z"
+# Polling interval in seconds for the watcher
+INTERVAL_SECONDS = 20
+# Total duration to run the watcher in minutes
+DURATION_MINUTES = 60
+# Range of monitored cells (actions) in the Current sheet
+MONITOR_RANGE = "Current!C6:C11"
+# Sheet name for the History log
+HISTORY_SHEET_NAME = "History"
+# Sheet name for the Priority queue
+PRIORITY_SHEET_NAME = "Priority"
+# Sheet name for the NonPriority queue
+NON_PRIORITY_SHEET_NAME = "NonPriority"
+# Range for raw submissions to process
+RAW_SUBMISSIONS_RANGE = "RawSubmissions!B4:E"
+# Range for the current queue in the Current sheet
+CURRENT_QUEUE_RANGE = "Current!E6:I11"
+# Range for compaction in the Current sheet
+COMPACTION_RANGE = "Current!E5:I12"
+# Range for Floor Trial status display
+FLOOR_TRIAL_STATUS_RANGE = "Current!B19:D19"
+# Cell for Floor Trial date
+FLOOR_TRIAL_DATE_CELL = "Current!D15"
+# Cell for Floor Trial start time
+FLOOR_TRIAL_START_CELL = "Current!B17"
+# Cell for Floor Trial end time
+FLOOR_TRIAL_END_CELL = "Current!D17"
+# Cell controlling automation run/stop
+AUTOMATION_CONTROL_CELL = "Current!H2"
+# Range for Priority division list
+PRIORITY_DIVISION_RANGE = "Current!F16:F30"
+# Range for Priority flag (X) list
+PRIORITY_FLAG_RANGE = "Current!G16:G30"
+# Range for Priority queue
+PRIORITY_QUEUE_RANGE = "Priority!B3:F"
+# Range for NonPriority queue
+NON_PRIORITY_QUEUE_RANGE = "NonPriority!B3:F"
+
 
 def retry_on_exception(fn, *args, **kwargs):
     # simple version
@@ -123,8 +167,7 @@ def process_actions(
                         return False
             return True
 
-        # Ensure "History" sheet exists before writing
-        HISTORY_SHEET_NAME = "History"
+        # Ensure History sheet exists before writing
         sheets.ensure_sheet_exists(service, spreadsheet_id, HISTORY_SHEET_NAME)
 
         deferred_minus_rows = []  # for storing rows to append after compaction
@@ -268,7 +311,7 @@ def process_actions(
                 continue
 
         # After all actions, compact E5:I12 upward (preserving order)
-        compaction_range = f"{sheet_name}!E5:I12"
+        compaction_range = COMPACTION_RANGE
         compaction_data = fetch_sheet_values(service, spreadsheet_id, compaction_range)
         # Ensure all rows have length 5 (E:I)
         compaction_data = [
@@ -298,7 +341,7 @@ def process_actions(
                 valueInputOption="RAW",
                 body={"values": compacted},
             ).execute()
-            log.info("Compaction complete: E5:I12 compacted upward.")
+            log.info(f"Compaction complete: {compaction_range} compacted upward.")
         else:
             log.warning(
                 f"Attempted to update out-of-bounds range {compaction_range}, skipping compaction."
@@ -360,7 +403,7 @@ def process_priority(service, spreadsheet_id):
     """
     Read from Priority!B3:F, find first non-empty row, log and clear, return as 5-cell list or None.
     """
-    range_name = "Priority!B3:F"
+    range_name = PRIORITY_QUEUE_RANGE
     values = fetch_sheet_values(service, spreadsheet_id, range_name)
     taken_row = None
     # Pad all rows to 5 cells
@@ -403,7 +446,7 @@ def process_non_priority(service, spreadsheet_id):
     """
     Read from NonPriority!B3:F, find first non-empty row, log and clear, return as 5-cell list or None.
     """
-    range_name = "NonPriority!B3:F"
+    range_name = NON_PRIORITY_QUEUE_RANGE
     values = fetch_sheet_values(service, spreadsheet_id, range_name)
     taken_row = None
     # Pad all rows to 5 cells
@@ -445,7 +488,7 @@ def fill_current_from_queues(service, spreadsheet_id):
     """
     Read Current!E6:I11, for each empty row, try to fill from Priority, then NonPriority (row ≤ 9).
     """
-    range_name = "Current!E6:I11"
+    range_name = CURRENT_QUEUE_RANGE
     values = fetch_sheet_values(service, spreadsheet_id, range_name)
     # Pad to always 6 rows
     while len(values) < 6:
@@ -495,9 +538,9 @@ def process_raw_submissions(service, spreadsheet_id, max_rows_per_batch=20):
     log.info(
         f"Starting process_raw_submissions ... (max_rows_per_batch={max_rows_per_batch})"
     )
-    raw_range = "RawSubmissions!B4:E"
-    divisions_range = "Current!F16:F30"
-    priority_range = "Current!G16:G30"
+    raw_range = RAW_SUBMISSIONS_RANGE
+    divisions_range = PRIORITY_DIVISION_RANGE
+    priority_range = PRIORITY_FLAG_RANGE
     batch_read_count = 0
     batch_write_count = 0
     # Step 1: Batch get all needed data
@@ -715,7 +758,7 @@ def update_floor_trial_status(service, spreadsheet_id):
     """
     try:
         # Read values
-        ranges = ["Current!D15", "Current!B17", "Current!D17"]
+        ranges = [FLOOR_TRIAL_DATE_CELL, FLOOR_TRIAL_START_CELL, FLOOR_TRIAL_END_CELL]
         result = (
             service.spreadsheets()
             .values()
@@ -776,7 +819,7 @@ def update_floor_trial_status(service, spreadsheet_id):
                 "update_floor_trial_status: One or more date/time fields are empty; status will be Not Active."
             )
         # Update merged cell Current!B19 (B19:D19)
-        update_range = "Current!B19:D19"
+        update_range = FLOOR_TRIAL_STATUS_RANGE
         service.spreadsheets().values().update(
             spreadsheetId=spreadsheet_id,
             range=update_range,
@@ -800,23 +843,25 @@ def run_watcher(
     log.info("Watcher starting")
     service = sheets.get_sheets_service()
 
-    # Check Current!H2 value before running watcher loop
+    # Check automation control cell value before running watcher loop
     try:
-        h2_value_rows = fetch_sheet_values(service, spreadsheet_id, "Current!H2")
+        h2_value_rows = fetch_sheet_values(
+            service, spreadsheet_id, AUTOMATION_CONTROL_CELL
+        )
         h2_val = h2_value_rows[0][0] if h2_value_rows and h2_value_rows[0] else ""
-        log.info(f"Fetched Current!H2 value: '{h2_val}'")
+        log.info(f"Fetched {AUTOMATION_CONTROL_CELL} value: '{h2_val}'")
         if str(h2_val).strip().lower() != "runautomations":
             log.warning(
-                f"Automation stopped: H2 is not RunAutomations (value was '{h2_val}')"
+                f"Automation stopped: {AUTOMATION_CONTROL_CELL} is not RunAutomations (value was '{h2_val}')"
             )
             return
         else:
             log.info(
-                "Current!H2 is 'RunAutomations' (case-insensitive) — proceeding with watcher."
+                f"{AUTOMATION_CONTROL_CELL} is 'RunAutomations' (case-insensitive) — proceeding with watcher."
             )
     except Exception as e:
-        log.error(f"Error fetching Current!H2 value: {e}", exc_info=True)
-        log.warning("Automation stopped: Could not fetch Current!H2 value.")
+        log.error(f"Error fetching {AUTOMATION_CONTROL_CELL} value: {e}", exc_info=True)
+        log.warning("Automation stopped: Could not fetch automation control value.")
         return
 
     end_time = datetime.utcnow() + timedelta(minutes=duration_minutes)
@@ -867,16 +912,9 @@ def run_watcher(
 
 def main():
     log.info("Starting main function")
-    SHEET_ID = "1TW21azr-P8PlvGyEQ7MCYXq3unG5JkdgO4pcV2j75Hw"
-    SHEET_RANGE = "Current!A:Z"
-    INTERVAL_SECONDS = int("20")
-    DURATION_MINUTES = int("60")
-    MONITOR_RANGE = "Current!C6:C11"
-
     log.info(
         f"Configuration loaded: SHEET_ID={SHEET_ID}, SHEET_RANGE={SHEET_RANGE}, INTERVAL_SECONDS={INTERVAL_SECONDS}, DURATION_MINUTES={DURATION_MINUTES}, MONITOR_RANGE={MONITOR_RANGE}"
     )
-
     run_watcher(
         SHEET_ID, SHEET_RANGE, INTERVAL_SECONDS, DURATION_MINUTES, MONITOR_RANGE
     )
