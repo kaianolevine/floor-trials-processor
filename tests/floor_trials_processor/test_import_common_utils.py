@@ -1,6 +1,6 @@
 from kaiano_common_utils import helpers
 
-from project_name import placeholder
+from floor_trials_processor import placeholder
 
 
 def test_import_common_utils():
