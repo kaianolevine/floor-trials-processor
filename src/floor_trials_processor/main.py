@@ -21,7 +21,9 @@ SHEET_ID = "1JsWQDnxHis79dHcdlZZlgO1HS5Ldlq8zvLD1FdEwBQ4"
 # Main range to monitor in the Current sheet (all columns)
 SHEET_RANGE = "Current!A:Z"
 # Polling interval in seconds for the watcher
-INTERVAL_SECONDS = 60
+INTERVAL_SECONDS = 20
+# Periodic sync interval in seconds for writing memory to Sheets
+SYNC_INTERVAL_SECONDS = 60
 # Total duration to run the watcher in minutes
 DURATION_MINUTES = 60
 # Range of monitored cells (actions) in the Current sheet
@@ -56,9 +58,9 @@ PRIORITY_DIVISION_RANGE = "Current!F16:F30"
 # Range for Priority flag (X) list
 PRIORITY_FLAG_RANGE = "Current!G16:G30"
 # Range for Priority queue
-PRIORITY_QUEUE_RANGE = "Priority!B3:F"
+PRIORITY_QUEUE_RANGE = "Priority!C3:F"
 # Range for NonPriority queue
-NON_PRIORITY_QUEUE_RANGE = "NonPriority!B3:F"
+NON_PRIORITY_QUEUE_RANGE = "NonPriority!C3:F"
 # Range for rejected submissions
 REJECTED_SUBMISSIONS_RANGE = "RejectedSubmissions!B:G"
 
@@ -206,19 +208,18 @@ class SpreadsheetState:
                     row_cells.append(cell.ljust(col_widths[i]))
                 log.info(f"{rownum:<4}| " + " | ".join(row_cells))
             log.info("")  # Blank line between sections
-def import_external_submissions(service, target_spreadsheet_id, source_spreadsheet_id):
+def import_external_submissions(service, state: SpreadsheetState, source_spreadsheet_id: str):
     """
-    Import new submissions from an external spreadsheet to RawSubmissions!B:G in the target sheet.
-    - Fetch values from EXTERNAL_SOURCE_RANGE in the source spreadsheet.
-    - Filter out rows where column H == "X" (case-insensitive).
-    - For each unprocessed row, extract columns A, C, D, E, F, and G.
-    - Append all mapped rows to RawSubmissions!B:G in the target spreadsheet.
-    - Mark those rows as processed in column H in the source spreadsheet.
-    - Log how many rows were imported and marked.
+    Imports new submissions from external spreadsheet into in-memory state.
+    - Reads from external Form Responses sheet.
+    - Maps A, C, D, E, F, G → RawSubmissions (B–G equivalent in memory).
+    - Normalizes HasStartingCue field to 'Yes'/'No'.
+    - Marks processed rows (H = X) in source.
+    - Updates state.sections['raw_submissions']['data'] and marks dirty.
     """
-    log.info("import_external_submissions: Starting import from external source.")
+    log.info("import_external_submissions: Starting import from external source (in-memory mode).")
+
     try:
-        # Fetch all rows from source
         result = (
             service.spreadsheets()
             .values()
@@ -226,69 +227,59 @@ def import_external_submissions(service, target_spreadsheet_id, source_spreadshe
             .execute()
         )
         values = result.get("values", [])
-        log.debug(f"import_external_submissions: Fetched {len(values)} rows from external source.")
-        mapped_rows = []
+        if not values:
+            log.info("No data found in external source.")
+            return
+
+        new_rows = []
         rows_to_mark = []
+
         for idx, row in enumerate(values):
-            # Pad row to at least 8 columns (A-H)
             row_padded = row + [""] * (8 - len(row)) if len(row) < 8 else row[:8]
-            h_val = str(row_padded[7]).strip().lower()
-            if h_val == "x":
+            if str(row_padded[7]).strip().lower() == "x":
                 continue
-            # Extract columns: A (0), C (2), D (3), E (4), F (5), G (6)
+
+            has_starting_cue = "Yes" if "specific cue" in str(row_padded[5]).lower() else "No"
+
             mapped_row = [
-                row_padded[0],  # A
-                row_padded[2],  # C
-                row_padded[3],  # D
-                row_padded[4],  # E
-                row_padded[5],  # F
-                row_padded[6],  # G
+                row_padded[0],  # Timestamp
+                row_padded[2],  # Leader
+                row_padded[3],  # Follower
+                row_padded[4],  # Division
+                has_starting_cue,
+                row_padded[6],  # Cue description
             ]
-            mapped_rows.append(mapped_row)
+
+            new_rows.append(mapped_row)
             rows_to_mark.append(idx)
-        if mapped_rows:
-            # Append to RawSubmissions!B:G in target spreadsheet
-            append_range = "RawSubmissions!B:G"
-            service.spreadsheets().values().append(
-                spreadsheetId=target_spreadsheet_id,
-                range=append_range,
-                valueInputOption="RAW",
-                insertDataOption="INSERT_ROWS",
-                body={"values": mapped_rows},
-            ).execute()
-            # Mark processed rows in column H with "X" in one update call
-            # Compute the update range for H in source: Form Responses 1!H{row+2}:H{row+2} for each idx
-            # Since EXTERNAL_SOURCE_RANGE starts at row 2, idx 0 -> row 2, idx 1 -> row 3, etc.
-            update_rows = []
-            for idx in rows_to_mark:
-                update_rows.append(["X"])
-            if rows_to_mark:
-                first_row = rows_to_mark[0] + 2
-                last_row = rows_to_mark[-1] + 2
-                # Build update range as Sheet1!H{first_row}:H{last_row}
-                update_range = f"Form Responses 1!H{first_row}:H{last_row}"
-                # But if non-contiguous, need to update all rows at once - so just build a list of all target rows
-                # To handle possible non-contiguous rows, update all at once using batchUpdate, but for simplicity, use update with all rows
-                # Prepare values for each row in order
-                update_rows_full = []
-                for idx in range(len(values)):
-                    if idx in rows_to_mark:
-                        update_rows_full.append(["X"])
-                    else:
-                        # Keep existing value (or blank)
-                        update_rows_full.append([values[idx][7]] if len(values[idx]) > 7 else [""])
-                # Only update the rows that were fetched (all rows in the range)
-                # So update Form Responses 1!H2:H{len(values)+1}
-                full_update_range = f"Form Responses 1!H2:H{len(values)+1}"
-                service.spreadsheets().values().update(
-                    spreadsheetId=source_spreadsheet_id,
-                    range=full_update_range,
-                    valueInputOption="RAW",
-                    body={"values": update_rows_full},
-                ).execute()
-            log.info(f"import_external_submissions: Imported {len(mapped_rows)} row(s) and marked as processed in external source.")
-        else:
-            log.info("import_external_submissions: No new unprocessed rows found in external source.")
+
+        if not new_rows:
+            log.info("No new unprocessed rows to import.")
+            return
+
+        # Append to in-memory RawSubmissions data
+        raw_data = state.sections["raw_submissions"]["data"]
+        raw_data.extend(new_rows)
+        state.sections["raw_submissions"]["data"] = raw_data
+        state.mark_dirty("raw_submissions")
+
+        log.info(f"Added {len(new_rows)} rows to in-memory RawSubmissions data.")
+
+        # Mark processed rows with 'X' in the external source
+        updates = [["X" if idx in rows_to_mark else (values[idx][7] if len(values[idx]) > 7 else "")]
+                   for idx in range(len(values))]
+        update_range = f"Form Responses 1!H2:H{len(values)+1}"
+
+        service.spreadsheets().values().update(
+            spreadsheetId=source_spreadsheet_id,
+            range=update_range,
+            valueInputOption="RAW",
+            body={"values": updates},
+        ).execute()
+
+        log.info(f"Marked {len(rows_to_mark)} external rows as processed.")
+        log.debug(f"Sample imported rows: {new_rows[:3]}")
+
     except Exception as e:
         log.error(f"import_external_submissions: Error occurred: {e}", exc_info=True)
 
@@ -634,12 +625,12 @@ def process_actions(
 # ---------------------------------------------------------------------
 # New queue processing functions
 # ---------------------------------------------------------------------
-def process_priority(service, spreadsheet_id):
+def process_priority(service, spreadsheet_id, state):
     """
-    Read from Priority!B3:F, find first non-empty row, log and clear, return as 5-cell list or None.
+    Read from in-memory Priority queue, find first non-empty row, log and clear, return as 5-cell list or None.
     """
-    range_name = PRIORITY_QUEUE_RANGE
-    values = fetch_sheet_values(service, spreadsheet_id, range_name)
+    section_name = "priority_queue"
+    values = state.sections[section_name]["data"]
     taken_row = None
     # Pad all rows to 5 cells
     values = [
@@ -665,24 +656,20 @@ def process_priority(service, spreadsheet_id):
         log.info(
             f"process_priority: Compacted Priority!B3:F — {len(non_empty)} non-empty, {len(empty)} empty rows"
         )
-        # Update the sheet in one call
-        service.spreadsheets().values().update(
-            spreadsheetId=spreadsheet_id,
-            range=range_name,
-            valueInputOption="RAW",
-            body={"values": compacted},
-        ).execute()
+        # Update in-memory state and mark dirty
+        state.sections[section_name]["data"] = compacted
+        state.mark_dirty(section_name)
         return taken_row
     log.info("process_priority: No non-empty rows found in Priority queue.")
     return None
 
 
-def process_non_priority(service, spreadsheet_id):
+def process_non_priority(service, spreadsheet_id, state):
     """
-    Read from NonPriority!B3:F, find first non-empty row, log and clear, return as 5-cell list or None.
+    Read from in-memory NonPriority queue, find first non-empty row, log and clear, return as 5-cell list or None.
     """
-    range_name = NON_PRIORITY_QUEUE_RANGE
-    values = fetch_sheet_values(service, spreadsheet_id, range_name)
+    section_name = "non_priority_queue"
+    values = state.sections[section_name]["data"]
     taken_row = None
     # Pad all rows to 5 cells
     values = [
@@ -708,49 +695,60 @@ def process_non_priority(service, spreadsheet_id):
         log.info(
             f"process_non_priority: Compacted NonPriority!B3:F — {len(non_empty)} non-empty, {len(empty)} empty rows"
         )
-        service.spreadsheets().values().update(
-            spreadsheetId=spreadsheet_id,
-            range=range_name,
-            valueInputOption="RAW",
-            body={"values": compacted},
-        ).execute()
+        # Update in-memory state and mark dirty
+        state.sections[section_name]["data"] = compacted
+        state.mark_dirty(section_name)
         return taken_row
     log.info("process_non_priority: No non-empty rows found in NonPriority queue.")
     return None
 
 
-def fill_current_from_queues(service, spreadsheet_id):
+def fill_current_from_queues(service, spreadsheet_id, state):
     """
-    Read Current!E6:I11, for each empty row, try to fill from Priority, then NonPriority (row ≤ 9).
+    Fill empty rows in the in-memory Current queue from Priority and NonPriority queues using SpreadsheetState.
+    For each empty row in the current queue:
+      - Try to get a row from the priority queue.
+      - If that returns nothing, and fewer than the reserved priority rows are filled, try the non-priority queue.
+      - If a row is returned, insert it into the first available empty slot in the current_queue memory structure.
+      - Mark the current_queue section dirty.
+    Returns True if any rows were filled, False otherwise.
     """
-    range_name = CURRENT_QUEUE_RANGE
-    values = fetch_sheet_values(service, spreadsheet_id, range_name)
-    # Pad to always 6 rows
-    while len(values) < 6:
-        values.append([""] * 5)
+    # Current queue in memory: always 6 rows, 5 cols (E6:I11)
+    current_section = state.sections["current_queue"]
+    current_data = current_section["data"]
+    # Pad to always 6 rows of 5 cells
+    while len(current_data) < 6:
+        current_data.append([""] * 5)
+    for idx in range(len(current_data)):
+        if len(current_data[idx]) < 5:
+            current_data[idx] += [""] * (5 - len(current_data[idx]))
+        elif len(current_data[idx]) > 5:
+            current_data[idx] = current_data[idx][:5]
     # Track if any changes made
     changes_made = False
-    for idx, row in enumerate(values):
+    # Count how many rows are filled with data (for reserved rows logic)
+    def is_filled(row):
+        return any(str(cell).strip() for cell in row)
+    # Reserved: rows 6-9 (idx 0-3) are for Priority, rows 10-11 (idx 4-5) for NonPriority
+    reserved_priority_rows = 4
+    # For each empty row, try to fill
+    for idx, row in enumerate(current_data):
         row_num = 6 + idx
-        # Pad row to 5 cells
-        row_five = row + [""] * (5 - len(row)) if len(row) < 5 else row[:5]
-        if not any(str(cell).strip() for cell in row_five):
+        if not is_filled(row):
             # Try Priority first
-            data = process_priority(service, spreadsheet_id)
-            if data is None and row_num <= 9:
-                # Try NonPriority if Priority empty and row ≤ 9
-                data = process_non_priority(service, spreadsheet_id)
+            data = process_priority(service, spreadsheet_id, state)
+            if data is None and idx < reserved_priority_rows:
+                # Try NonPriority if Priority empty and this is within reserved priority rows
+                data = process_non_priority(service, spreadsheet_id, state)
+            elif data is None and idx >= reserved_priority_rows:
+                # For non-reserved rows (idx 4,5), only try NonPriority
+                data = process_non_priority(service, spreadsheet_id, state)
             if data is not None:
-                # Write data to Current!E{row_num}:I{row_num}
-                update_range = f"Current!E{row_num}:I{row_num}"
-                service.spreadsheets().values().update(
-                    spreadsheetId=spreadsheet_id,
-                    range=update_range,
-                    valueInputOption="RAW",
-                    body={"values": [data]},
-                ).execute()
+                # Insert into in-memory current queue
+                current_data[idx] = data
+                state.mark_dirty("current_queue")
                 log.info(
-                    f"fill_current_from_queues: Wrote data to {update_range}: {data}"
+                    f"fill_current_from_queues: Filled Current queue row {row_num} with: {data}"
                 )
                 changes_made = True
             else:
@@ -759,359 +757,116 @@ def fill_current_from_queues(service, spreadsheet_id):
                 )
     if not changes_made:
         log.info("fill_current_from_queues: No empty rows filled.")
+    return changes_made
 
 
 # ---------------------------------------------------------------------
 # RawSubmissions processing function
 # ---------------------------------------------------------------------
-def process_raw_submissions(service, spreadsheet_id, max_rows_per_batch=20):
+def process_raw_submissions_in_memory(state: SpreadsheetState):
     """
-    Efficiently process up to max_rows_per_batch rows from RawSubmissions!C4:F per batch,
-    moving to Priority or NonPriority sheet based on division/priority, minimizing Google Sheets API read/write calls.
-    Uses batchGet for reads, batched updates, and a single batchClear for source rows. Detailed logging for counts.
+    Process raw submissions entirely in memory.
+    Moves rows from 'raw_submissions' into 'priority_queue' or 'non_priority_queue'
+    depending on division mappings. Updates 'report' and 'rejected_submissions'
+    sections and marks dirty sections for sync.
     """
-    log.info(
-        f"Starting process_raw_submissions ... (max_rows_per_batch={max_rows_per_batch})"
-    )
-    raw_range = RAW_SUBMISSIONS_RANGE
-    divisions_range = PRIORITY_DIVISION_RANGE
-    priority_range = PRIORITY_FLAG_RANGE
-    batch_read_count = 0
-    batch_write_count = 0
-    # Fetch Report sheet data once at the beginning
-    report_values = fetch_sheet_values(service, spreadsheet_id, REPORT_RANGE)
-    # Step 1: Batch get all needed data
-    ranges = [
-        raw_range,
-        divisions_range,
-        priority_range,
-        "Priority!C3:F",
-        "NonPriority!C3:F",
-    ]
-    result = (
-        service.spreadsheets()
-        .values()
-        .batchGet(spreadsheetId=spreadsheet_id, ranges=ranges)
-        .execute()
-    )
-    batch_read_count += 1
-    value_ranges = result.get("valueRanges", [])
-    raw_values = value_ranges[0].get("values", [])
-    divisions_values = value_ranges[1].get("values", [])
-    priority_flags = value_ranges[2].get("values", [])
-    priority_sheet_values = value_ranges[3].get("values", [])
-    nonpriority_sheet_values = value_ranges[4].get("values", [])
-    log.info(f"Fetched {len(raw_values)} rows from {raw_range}")
-    # Flatten division/priority lists, pad to same length
-    # Build division to priority mapping
-    division_priority_map = {}
-    for idx, divrow in enumerate(divisions_values):
-        div_val = divrow[0].strip() if divrow and len(divrow) > 0 else ""
-        if div_val == "":
+    log.info("process_raw_submissions_in_memory: Starting processing in-memory")
+
+    raw_data = state.sections["raw_submissions"]["data"]
+    # Build priority_names and all_known_divs from the row-by-row mapping of division and flag
+    priority_names = []
+    all_known_divs = []
+    div_rows = state.sections["priority_division_map"]["data"]
+    flag_rows = state.sections["priority_flag_map"]["data"]
+    for div_row, flag_row in zip(div_rows, flag_rows):
+        division = div_row[0].strip() if div_row and len(div_row) > 0 else ""
+        flag = flag_row[0].strip() if flag_row and len(flag_row) > 0 else ""
+        if not division:
             continue
-        prio_flag = ""
-        if idx < len(priority_flags):
-            prio_flag = (
-                priority_flags[idx][0].strip().upper()
-                if priority_flags[idx] and len(priority_flags[idx]) > 0
-                else ""
+        all_known_divs.append(division)
+        if flag.lower() == "x":
+            priority_names.append(division)
+
+    priority_data = state.sections["priority_queue"]["data"]
+    nonpriority_data = state.sections["non_priority_queue"]["data"]
+    report_data = state.sections["report"]["data"]
+    rejected_data = state.sections["rejected_submissions"]["data"]
+
+    # Normalize all rows to 4–6 columns
+    raw_data = [r + [""] * (6 - len(r)) if len(r) < 6 else r[:6] for r in raw_data]
+
+    processed = 0
+    for row in list(raw_data):  # iterate over a copy
+        if not any(str(c).strip() for c in row):
+            continue
+
+        timestamp, leader, follower, division, has_cue, cue_desc = row
+        division = str(division).strip()
+        key = (leader.lower(), follower.lower(), division.lower())
+
+        # Duplicate check (existing queues)
+        all_existing = {
+            tuple(str(c).strip().lower() for c in r[:3])
+            for r in priority_data + nonpriority_data
+            if any(str(x).strip() for x in r)
+        }
+        if key in all_existing:
+            log.info(f"Duplicate found for {leader} / {follower} / {division}")
+            # Determine which queue the duplicate was found in
+            found_in_priority = any(
+                tuple(str(c).strip().lower() for c in r[:3]) == key
+                for r in priority_data
+                if any(str(x).strip() for x in r)
             )
-        division_priority_map[div_val] = prio_flag
-    priority_divisions = [
-        div for div, flag in division_priority_map.items() if flag == "X"
-    ]
-    non_priority_divisions = [
-        div for div, flag in division_priority_map.items() if flag != "X" and div != ""
-    ]
-    log.info(f"Priority divisions: {priority_divisions}")
-    log.info(f"Non-priority divisions: {non_priority_divisions}")
-
-    # Helper: find next open row given a sheet's C:F values (values from C3:F, first empty row = index + 3)
-    def find_next_open_row_from_sheet(sheet_values):
-        for i, row in enumerate(sheet_values):
-            if not any(str(cell).strip() for cell in row):
-                return i + 3
-        return len(sheet_values) + 3
-
-    processed_count = 0
-    skipped_count = 0
-    total_batches = 0
-    start_time = time.time()
-    # For batch appending to Report
-    report_new_rows = []
-
-    rejected_rows = []
-    # --- Fetch Current!B17 value before the while loop ---
-    current_time_rows = fetch_sheet_values(service, spreadsheet_id, FLOOR_TRIAL_START_CELL)
-    current_time_str = current_time_rows[0][0].strip() if current_time_rows and current_time_rows[0] else ""
-    def parse_time(tstr):
-        for fmt in ("%H:%M", "%H:%M:%S", "%I:%M %p", "%I:%M:%S %p"):
-            try:
-                return datetime.strptime(tstr, fmt).time()
-            except Exception:
-                continue
-        return None
-    current_start_time = parse_time(current_time_str)
-
-    while True:
-        # Always use batchGet at the start of each batch
-        result = (
-            service.spreadsheets()
-            .values()
-            .batchGet(
-                spreadsheetId=spreadsheet_id,
-                ranges=[raw_range, "Priority!C3:F", "NonPriority!C3:F"],
+            found_in_nonpriority = any(
+                tuple(str(c).strip().lower() for c in r[:3]) == key
+                for r in nonpriority_data
+                if any(str(x).strip() for x in r)
             )
-            .execute()
-        )
-        batch_read_count += 1
-        raw_values = result.get("valueRanges", [])[0].get("values", [])
-        priority_sheet_values = result.get("valueRanges", [])[1].get("values", [])
-        nonpriority_sheet_values = result.get("valueRanges", [])[2].get("values", [])
-        # Pad all rows to 4 cells
-        raw_values = [
-            row + [""] * (4 - len(row)) if len(row) < 4 else row[:4]
-            for row in raw_values
-        ]
-        batch_processed = 0
-        batch_skipped = 0
-        rows_to_clear = []
-        priority_moves = []
-        nonpriority_moves = []
-        priority_next_row = find_next_open_row_from_sheet(priority_sheet_values)
-        nonpriority_next_row = find_next_open_row_from_sheet(nonpriority_sheet_values)
-        skipped_divisions = set()
-        skipped_rows = []
-        # --- Collect existing (C, D, E) entries from Priority, NonPriority, and Current queues for duplicate check ---
-        existing_entries = set()
-        # Priority!C3:E, NonPriority!C3:E, Current!E6:G11
-        for data_range in ["Priority!C3:E", "NonPriority!C3:E", "Current!E6:G11"]:
-            vals = fetch_sheet_values(service, spreadsheet_id, data_range)
-            for r in vals:
-                if len(r) >= 3 and any(str(x).strip() for x in r[:3]):
-                    existing_entries.add(tuple(str(x).strip().lower() for x in r[:3]))
-        # Helper for normalization
-        def norm_tuple(lst):
-            return tuple(str(x).strip().lower() for x in lst)
-
-        # Process up to max_rows_per_batch non-empty rows
-        for idx, row in enumerate(raw_values):
-            if batch_processed + batch_skipped >= max_rows_per_batch:
-                break
-            row_num = idx + 4
-            if not any(str(cell).strip() for cell in row):
-                continue
-            # --- Validation logic ---
-            is_valid = True
-            rejection_reason = ""
-
-            # --- Validation 1: Duplicate (C, D, E) in Priority, NonPriority, or Current ---
-            cde = [row[0].strip(), row[1].strip(), row[2].strip()] if len(row) >= 3 else ["", "", ""]
-            if norm_tuple(cde) in existing_entries:
-                is_valid = False
-                rejection_reason = "Duplicate entry in queue"
-
-            # --- Validation 2: Time before Current!B17 ---
-            if is_valid and current_start_time:
-                raw_time_str = row[0].strip() if len(row) > 0 else ""
-                raw_time_obj = parse_time(raw_time_str)
-                if raw_time_obj and raw_time_obj < current_start_time:
-                    is_valid = False
-                    rejection_reason = f"Time {raw_time_str} before current start time {current_time_str}"
-
-            if is_valid:
-                div = row[2].strip() if len(row) > 2 else ""
-                log.debug(f"Processing RawSubmissions row {row_num}: {row}")
-                if div in priority_divisions:
-                    dest_sheet = "Priority"
-                    dest_row = priority_next_row
-                    priority_moves.append((dest_row, row[:4]))
-                    priority_next_row += 1
-                elif div in non_priority_divisions:
-                    dest_sheet = "NonPriority"
-                    dest_row = nonpriority_next_row
-                    nonpriority_moves.append((dest_row, row[:4]))
-                    nonpriority_next_row += 1
-                else:
-                    log.warning(
-                        f"Unknown division '{div}' in RawSubmissions row {row_num}; skipping."
-                    )
-                    skipped_count += 1
-                    batch_skipped += 1
-                    skipped_divisions.add(div)
-                    skipped_rows.append(row_num)
-                    continue
-
-                # -- REPORT SHEET LOGIC --
-                # row[0:4] = columns C, D, E, F from RawSubmissions, which map to A-D in Report
-                # Check if a row already exists in report_values by matching first 3 columns (A, B, C)
-                # Ignore case and whitespace
-                def norm(x):
-                    return str(x).strip().lower()
-                match_found = False
-                for report_row in report_values:
-                    if (
-                        len(report_row) >= 3
-                        and norm(report_row[0]) == norm(row[0])
-                        and norm(report_row[1]) == norm(row[1])
-                        and norm(report_row[2]) == norm(row[2])
-                    ):
-                        match_found = True
-                        break
-                if not match_found:
-                    # Compose new report row: [C, D, E, F, 0]
-                    report_new_rows.append(row[0:4] + [0])
-
-                log.info(
-                    f"Will move RawSubmissions row {row_num} to {dest_sheet} at row {dest_row}: {row[:4]}"
-                )
-                rows_to_clear.append(row_num)
-                processed_count += 1
-                batch_processed += 1
+            if found_in_priority:
+                rejected_data.append(row + ["Duplicate entry in Priority queue"])
+            elif found_in_nonpriority:
+                rejected_data.append(row + ["Duplicate entry in NonPriority queue"])
             else:
-                rejection_reason = rejection_reason or "Validation failed"
-                log.info(f"Rejecting RawSubmissions row {row_num} for reason: {rejection_reason}")
-                # Capture all columns B through G (we can reconstruct from context)
-                # Since our raw_values represent columns C-F, we need to also fetch column B separately
-                rejected_row_range = f"RawSubmissions!B{row_num}:G{row_num}"
-                rejected_row_values = fetch_sheet_values(service, spreadsheet_id, rejected_row_range)
-                if rejected_row_values and rejected_row_values[0]:
-                    rejected_row = rejected_row_values[0]
-                    # Append reason to column H
-                    while len(rejected_row) < 6:
-                        rejected_row.append("")
-                    rejected_row.append(rejection_reason)
-                    rejected_rows.append(rejected_row)
-                else:
-                    log.warning(f"Could not fetch values for rejected row {row_num}")
-                rows_to_clear.append(row_num)
-                processed_count += 1
-                batch_processed += 1
-                continue
-        # Perform batch update for Priority moves
-        if priority_moves:
-            update_range = f"Priority!C{priority_moves[0][0]}:F{priority_moves[-1][0]}"
-            update_values = []
-            for dest_row, row_vals in priority_moves:
-                update_values.append(row_vals)
-            log.info(
-                f"Batch updating {len(priority_moves)} rows to Priority!C:F at rows {[r for r, _ in priority_moves]}"
-            )
-            service.spreadsheets().values().update(
-                spreadsheetId=spreadsheet_id,
-                range=update_range,
-                valueInputOption="RAW",
-                body={"values": update_values},
-            ).execute()
-            batch_write_count += 1
-        # Perform batch update for NonPriority moves
-        if nonpriority_moves:
-            update_range = (
-                f"NonPriority!C{nonpriority_moves[0][0]}:F{nonpriority_moves[-1][0]}"
-            )
-            update_values = []
-            for dest_row, row_vals in nonpriority_moves:
-                update_values.append(row_vals)
-            log.info(
-                f"Batch updating {len(nonpriority_moves)} rows to NonPriority!C:F at rows {[r for r, _ in nonpriority_moves]}"
-            )
-            service.spreadsheets().values().update(
-                spreadsheetId=spreadsheet_id,
-                range=update_range,
-                valueInputOption="RAW",
-                body={"values": update_values},
-            ).execute()
-            batch_write_count += 1
-        # Batch clear all moved rows in RawSubmissions
-        if rows_to_clear:
-            clear_ranges = [
-                f"RawSubmissions!C{row_num}:F{row_num}" for row_num in rows_to_clear
-            ]
-            log.info(
-                f"Batch clearing {len(clear_ranges)} RawSubmissions rows: {rows_to_clear}"
-            )
-            service.spreadsheets().values().batchClear(
-                spreadsheetId=spreadsheet_id,
-                body={"ranges": clear_ranges},
-            ).execute()
-            batch_write_count += 1
-        # After batch, compact RawSubmissions!C4:F upward (remove blank rows)
-        compact_vals = fetch_sheet_values(service, spreadsheet_id, raw_range)
-        batch_read_count += 1
-        compact_vals = [
-            r + [""] * (4 - len(r)) if len(r) < 4 else r[:4] for r in compact_vals
-        ]
-        non_empty = [r for r in compact_vals if any(str(cell).strip() for cell in r)]
-        total_rows = len(compact_vals)
-        while len(non_empty) < total_rows:
-            non_empty.append([""] * 4)
-        if compact_vals != non_empty:
-            service.spreadsheets().values().update(
-                spreadsheetId=spreadsheet_id,
-                range=raw_range,
-                valueInputOption="RAW",
-                body={"values": non_empty},
-            ).execute()
-            batch_write_count += 1
-            log.info("Compacted RawSubmissions!C4:F after batch processing.")
-        else:
-            log.debug("No compaction needed after batch.")
-        total_batches += 1
-        log.info(
-            f"Batch {total_batches}: processed {batch_processed} rows, skipped {batch_skipped} rows."
-        )
-        log.info(
-            f"API usage so far: {batch_read_count} read(s), {batch_write_count} write(s) this batch."
-        )
-        if skipped_rows:
-            log.info(
-                f"Skipped rows this batch: {skipped_rows} (unknown divisions: {list(skipped_divisions)})"
-            )
-        if batch_processed == 0 and batch_skipped == 0:
-            break
+                rejected_data.append(row + ["Duplicate entry in queue"])
+            continue
 
-    # After the loop, before clearing and compaction, append rejected rows in one batch if any:
-    if rejected_rows:
-        service.spreadsheets().values().append(
-            spreadsheetId=spreadsheet_id,
-            range=REJECTED_SUBMISSIONS_RANGE,
-            valueInputOption="RAW",
-            insertDataOption="INSERT_ROWS",
-            body={"values": rejected_rows},
-        ).execute()
-        log.info(f"Appended {len(rejected_rows)} rejected rows to RejectedSubmissions sheet.")
+        # Determine destination
+        is_priority = False
+        for pname in priority_names:
+            if pname and (division.startswith(pname) or pname.startswith(division)):
+                is_priority = True
+                break
+        if is_priority:
+            target_queue = priority_data
+            dest = "Priority"
+        else:  # any(division.startswith(known) or known.startswith(division) for known in all_known_divs):
+            target_queue = nonpriority_data
+            dest = "NonPriority"
+        # else:
+        #     rejected_data.append(row + ["Unknown division"])
+        #     continue
 
-    # After all batches, append new rows to Report if any
-    if report_new_rows:
-        service.spreadsheets().values().append(
-            spreadsheetId=spreadsheet_id,
-            range=REPORT_RANGE,
-            valueInputOption="RAW",
-            insertDataOption="INSERT_ROWS",
-            body={"values": report_new_rows},
-        ).execute()
-        log.info(f"Appended {len(report_new_rows)} new rows to Report sheet.")
-        # Now, sort the Report sheet by column A
-        try:
-            # Fetch all data from Report sheet for sorting
-            report_data_all = fetch_sheet_values(service, spreadsheet_id, REPORT_RANGE)
-            # Sort rows based on column A (index 0), ignoring case
-            sorted_report_data = sorted(report_data_all, key=lambda r: str(r[0]).lower() if r and len(r) > 0 else "")
-            # Write back the sorted data to the Report sheet
-            service.spreadsheets().values().update(
-                spreadsheetId=spreadsheet_id,
-                range=REPORT_RANGE,
-                valueInputOption="RAW",
-                body={"values": sorted_report_data},
-            ).execute()
-            log.info(f"Sorted Report sheet by column A after appending {len(report_new_rows)} rows.")
-        except Exception as e:
-            log.error(f"Error while sorting Report sheet: {e}", exc_info=True)
-    elapsed = time.time() - start_time
-    log.info(
-        f"process_raw_submissions complete: processed {processed_count} rows, skipped {skipped_count} rows in {total_batches} batches. "
-        f"Total API usage: {batch_read_count} read(s), {batch_write_count} write(s), elapsed {format_duration(elapsed)}"
-    )
+        target_queue.append([leader, follower, division, cue_desc])
+        report_data.append([timestamp, leader, follower, division, 0])
+        processed += 1
+        log.info(f"Moved row to {dest}: {row}")
+
+    # Sort report by column A (timestamp)
+    report_data.sort(key=lambda r: str(r[0]).lower() if r and len(r) > 0 else "")
+
+    # Clear processed rows
+    state.sections["raw_submissions"]["data"] = []
+    state.sections["priority_queue"]["data"] = priority_data
+    state.sections["non_priority_queue"]["data"] = nonpriority_data
+    state.sections["report"]["data"] = report_data
+    state.sections["rejected_submissions"]["data"] = rejected_data
+
+    # Mark all affected sections dirty
+    for sec in ["raw_submissions", "priority_queue", "non_priority_queue", "report", "rejected_submissions"]:
+        state.mark_dirty(sec)
+
+    log.info(f"process_raw_submissions_in_memory: Processed {processed} rows in-memory")
 
 
 def update_floor_trial_status(service, spreadsheet_id):
@@ -1196,7 +951,6 @@ def update_floor_trial_status(service, spreadsheet_id):
         log.error(f"update_floor_trial_status: Exception occurred: {e}", exc_info=True)
 
 
-
 def isRunning(service, spreadsheet_id: str) -> bool:
     # Check automation control cell value before running watcher loop
     try:
@@ -1233,13 +987,18 @@ def run_watcher(
     if not isRunning(service, spreadsheet_id):
         return
 
+    # Initialize SpreadsheetState and load from Sheets
+    state = SpreadsheetState()
+    state.load_from_sheets(service, spreadsheet_id)
+    state.visualize()
+
     end_time = datetime.utcnow() + timedelta(minutes=duration_minutes)
     log.info(
         f"Watcher starting: spreadsheet_id={spreadsheet_id}, range={sheet_range}, "
         f"interval={interval_seconds}s, duration={duration_minutes}min, monitor_range={monitor_range}"
     )
-
     iteration = 0
+    last_sync_time = time.time()
     while datetime.utcnow() < end_time:
         iteration += 1
         log.debug(f"Poll iteration {iteration} start")
@@ -1248,8 +1007,8 @@ def run_watcher(
             # Update Floor Trial status before processing submissions/actions
             update_floor_trial_status(service, spreadsheet_id)
             # Import external submissions before processing raw submissions
-            import_external_submissions(service, spreadsheet_id, EXTERNAL_SOURCE_SHEET_ID)
-            #process_raw_submissions(service, spreadsheet_id)
+            import_external_submissions(service, state, EXTERNAL_SOURCE_SHEET_ID)
+            process_raw_submissions_in_memory(state)
             current_values = fetch_sheet_values(service, spreadsheet_id, monitor_range)
             # Instead of change detection, process if any monitored cell is non-empty
             any_nonempty = any(
@@ -1268,12 +1027,24 @@ def run_watcher(
             log.error(f"Error during polling: {e}", exc_info=True)
         elapsed = time.time() - start
         sleep_time = max(0, interval_seconds - elapsed)
+        state.visualize()
+        # Periodic in-memory sync to Sheets every SYNC_INTERVAL_SECONDS
+        now = time.time()
+        if now - last_sync_time >= SYNC_INTERVAL_SECONDS:
+            log.info(f"Periodic sync: Writing in-memory state to Sheets (every {SYNC_INTERVAL_SECONDS}s)")
+            try:
+                state.sync_to_sheets(service, spreadsheet_id)
+                last_sync_time = now
+            except Exception as e:
+                log.error(f"Periodic sync failed: {e}", exc_info=True)
         log.debug(
             f"Poll iteration {iteration} took {format_duration(elapsed)}; sleeping for {format_duration(sleep_time)} …"
         )
         time.sleep(sleep_time)
         log.debug(f"Poll iteration {iteration} end")
 
+    # Sync in-memory state to Sheets before finishing
+    state.sync_to_sheets(service, spreadsheet_id)
     log.info("Watcher finished — runtime limit reached.")
 
 
