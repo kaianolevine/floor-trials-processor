@@ -1,3 +1,88 @@
+def load_state_from_sheets(service, spreadsheet_id):
+    def get_values(range_name, expected_cols):
+        try:
+            result = (
+                service.spreadsheets()
+                .values()
+                .get(spreadsheetId=spreadsheet_id, range=range_name)
+                .execute()
+            )
+            values = result.get("values", [])
+            return [row + [""] * (expected_cols - len(row)) for row in values]
+        except Exception as e:
+            log.error(f"Error loading range {range_name}: {e}")
+            return []
+
+    log.info("Loading spreadsheet state from Google Sheets...")
+
+    current = get_values("Current!E6:I12", 5)
+    priority = get_values("Priority!B3:F", 5)
+    nonpriority = get_values("NonPriority!B3:F", 5)
+    report = get_values("Reports!A4:E", 5)
+    rejected = get_values("RejectedSubmissions!B4:H", 7)
+
+    log.info(
+        f"Loaded state: {len(current)} current, {len(priority)} priority, "
+        f"{len(nonpriority)} nonpriority, {len(report)} reports, {len(rejected)} rejected"
+    )
+
+    state = SpreadsheetState()
+    state.sections["current_queue"]["data"] = current
+    state.sections["priority_queue"]["data"] = priority
+    state.sections["non_priority_queue"]["data"] = nonpriority
+    state.sections["report"]["data"] = report
+    state.sections["rejected_submissions"]["data"] = rejected
+
+    # --- Compact all queues after loading ---
+    for queue_name in ["current_queue", "priority_queue", "non_priority_queue"]:
+        data = state.sections[queue_name]["data"]
+        if not data:
+            continue
+        # Ensure each row has exactly 5 columns (pad or truncate)
+        data = [r + [""] * (5 - len(r)) if len(r) < 5 else r[:5] for r in data]
+        # Move all non-empty rows up, empty rows down, preserve order, pad to same total rows
+        non_empty = [r for r in data if any(str(c).strip() for c in r)]
+        empty = [r for r in data if not any(str(c).strip() for c in r)]
+        compacted = non_empty + empty
+        # Pad if needed to preserve row count
+        while len(compacted) < len(data):
+            # Use correct column count for padding
+            pad_cols = 5
+            compacted.append([""] * pad_cols)
+        state.sections[queue_name]["data"] = compacted
+        log.info(f"Compacted {queue_name} on startup — {len(non_empty)} non-empty rows pushed up and padded to 5 columns.")
+
+    return state
+def names_match(l1: str, f1: str, d1: str, l2: str, f2: str, d2: str) -> bool:
+    def first_word(name: str) -> str:
+        return name.strip().split(" ")[0].lower() if name else ""
+    return (
+        first_word(l1) == first_word(l2)
+        and first_word(f1) == first_word(f2)
+        and (d1 or "").strip().lower() == (d2 or "").strip().lower()
+    )
+
+# ---------------------------------------------------------------------
+# Helper: Clean and compact queue for in-memory queue sections
+# ---------------------------------------------------------------------
+from typing import List
+def clean_and_compact_queue(data: List[List[str]], name: str) -> List[List[str]]:
+    cleaned = [[str(c).strip() for c in r] for r in data]
+    non_empty = [r[:5] + [""] * (5 - len(r)) for r in cleaned if any(r and str(c).strip() for c in r)]
+    empty = [[""] * 5 for _ in range(len(data) - len(non_empty))]
+    compacted = non_empty + empty
+    log.info(f"clean_and_compact_queue: {name} — {len(non_empty)} non-empty, {len(empty)} empty rows after cleaning.")
+    return compacted
+
+# ---------------------------------------------------------------------
+# Helper: Audit queues for ghost gaps (empty row above non-empty)
+# ---------------------------------------------------------------------
+def audit_queues(state: "SpreadsheetState"):
+    for name in ["priority_queue", "non_priority_queue", "current_queue"]:
+        data = state.sections[name]["data"]
+        for idx, row in enumerate(data[:-1]):
+            if not any(str(c).strip() for c in row) and any(str(c).strip() for c in data[idx+1]):
+                log.warning(f"⚠️ Gap detected in {name} between rows {idx+1} and {idx+2}")
 #!/usr/bin/env python3
 """
 main.py — Continuous Google Sheets watcher + processor utilising kaiano-common-utils.
@@ -8,6 +93,45 @@ and when values change in the watched sheet it will trigger processing (moving r
 
 import time
 from datetime import datetime, timedelta
+from datetime import datetime, timezone
+
+# Debug / configuration flags
+DEBUG_UTC_MODE = True  # Set to False to disable verbose UTC verification
+def verify_utc_timing(service, sheet_id):
+    """Log UTC-based timing diagnostics for the Floor Trial schedule."""
+    try:
+        ranges = ["Current!D15", "Current!C17", "Current!D17"]
+        result = service.spreadsheets().values().batchGet(spreadsheetId=sheet_id, ranges=ranges).execute()
+        date_val = result["valueRanges"][0].get("values", [[""]])[0][0]
+        start_val = result["valueRanges"][1].get("values", [[""]])[0][0]
+        end_val = result["valueRanges"][2].get("values", [[""]])[0][0]
+
+        dt_start = parse_trial_datetime(date_val, start_val)
+        dt_end = parse_trial_datetime(date_val, end_val)
+        now_utc = datetime.now(timezone.utc)
+
+        log.info("=== UTC Verification — Floor Trial Timing ===")
+        log.info(f"Trial Date (D15): {date_val}")
+        log.info(f"Start Time (C17): {start_val}")
+        log.info(f"End Time (D17):   {end_val}")
+        log.info(f"Parsed UTC Start: {dt_start}")
+        log.info(f"Parsed UTC End:   {dt_end}")
+        log.info(f"Current UTC Now:  {now_utc}")
+
+        if dt_start and dt_end:
+            if dt_start <= now_utc <= dt_end:
+                log.info("✅ Floor Trial is IN PROGRESS (UTC)")
+            elif now_utc < dt_start:
+                log.info("⏳ Floor Trial has NOT STARTED yet (UTC)")
+            else:
+                log.info("🏁 Floor Trial is FINISHED (UTC)")
+        else:
+            log.warning("⚠️ Could not parse trial date/time — check sheet values")
+
+        update_floor_trial_status(service, sheet_id)
+        log.info("✅ UTC Verification complete — proceeding to queue processing")
+    except Exception as e:
+        log.error(f"Error verifying UTC timing: {e}")
 def process_actions_in_memory(state: "SpreadsheetState", action_values: "List[List[str]]"):
     """
     Processes action commands from action_values (corresponding to C6:C11).
@@ -42,7 +166,7 @@ def process_actions_in_memory(state: "SpreadsheetState", action_values: "List[Li
             # Move row to history with timestamp, then clear row in current_queue
             queue_row = current_queue[idx]
             if any(str(cell).strip() for cell in queue_row):
-                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
                 # Only include timestamp, leader, follower, division columns
                 new_history_row = [timestamp, queue_row[1], queue_row[2], queue_row[3]]
                 # Pad to 5 columns if needed
@@ -64,11 +188,7 @@ def process_actions_in_memory(state: "SpreadsheetState", action_values: "List[Li
                         r_leader = str(report_row[0]).strip()
                         r_follower = str(report_row[1]).strip()
                         r_division = str(report_row[2]).strip()
-                        if (
-                            r_leader.lower() == leader.lower()
-                            and r_follower.lower() == follower.lower()
-                            and r_division.lower() == division.lower()
-                        ):
+                        if names_match(r_leader, r_follower, r_division, leader, follower, division):
                             # Column 4 (index 4) is run count
                             try:
                                 count = int(str(report_row[4]).strip()) if str(report_row[4]).strip() else 0
@@ -139,6 +259,59 @@ def process_actions_in_memory(state: "SpreadsheetState", action_values: "List[Li
     log.debug("process_actions_in_memory: Cleared processed commands from action_values after handling.")
 from typing import Any, List, Optional
 
+# ---------------------------------------------------------------------
+# Helper: Parse trial date and time into datetime
+# ---------------------------------------------------------------------
+def parse_trial_datetime(date_str, time_str):
+    """
+    Parse a combined date/time or standalone UTC datetime string into a datetime.
+    Accepts either:
+      - date in M/D/YYYY and time in H:MM AM/PM, or
+      - full UTC datetime (YYYY-MM-DD HH:MM[:SS])
+    """
+    from datetime import datetime, timezone
+    try:
+        # Case 1: Combined full UTC datetime
+        full_str = (date_str or "") + " " + (time_str or "")
+        full_str = full_str.strip()
+        if not full_str:
+            raise ValueError("No datetime provided")
+
+        # Try known UTC formats
+        for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
+            try:
+                return datetime.strptime(full_str, fmt).replace(tzinfo=timezone.utc)
+            except Exception:
+                continue
+
+        # Case 2: Legacy separate date + time fields
+        if date_str and time_str:
+            for date_fmt in ("%m/%d/%Y", "%Y-%m-%d"):
+                try:
+                    date_obj = datetime.strptime(date_str.strip(), date_fmt).date()
+                    break
+                except Exception:
+                    continue
+            else:
+                raise ValueError(f"Could not parse date '{date_str}'")
+
+            for time_fmt in ("%I:%M %p", "%H:%M", "%H:%M:%S"):
+                try:
+                    time_obj = datetime.strptime(time_str.strip(), time_fmt).time()
+                    break
+                except Exception:
+                    continue
+            else:
+                raise ValueError(f"Could not parse time '{time_str}'")
+
+            return datetime.combine(date_obj, time_obj).replace(tzinfo=timezone.utc)
+
+        raise ValueError(f"Unrecognized datetime format: '{full_str}'")
+
+    except Exception as e:
+        log.warning(f"Failed to parse trial datetime: '{date_str}' '{time_str}' — {e}")
+        return None
+
 from kaiano_common_utils import google_sheets as sheets
 from kaiano_common_utils import logger as log
 
@@ -176,8 +349,8 @@ COMPACTION_RANGE = "Current!E6:J12"
 FLOOR_TRIAL_STATUS_RANGE = "Current!B19:D19"
 # Cell for Floor Trial date
 FLOOR_TRIAL_DATE_CELL = "Current!D15"
-# Cell for Floor Trial start time
-FLOOR_TRIAL_START_CELL = "Current!B17"
+# Cell for Floor Trial start time (now C17, not B17)
+FLOOR_TRIAL_START_CELL = "Current!C17"
 # Cell for Floor Trial end time
 FLOOR_TRIAL_END_CELL = "Current!D17"
 # Cell controlling automation run/stop
@@ -292,6 +465,8 @@ class SpreadsheetState:
                 self.dirty_sections.discard(name)
             except Exception as e:
                 log.error(f"SpreadsheetState: Error syncing '{name}': {e}", exc_info=True)
+            # After each section sync, audit queues for ghost gaps
+            audit_queues(self)
 
     def mark_dirty(self, section_name):
         """
@@ -368,10 +543,15 @@ def import_external_submissions(service, state: SpreadsheetState, source_spreads
             if str(row_padded[7]).strip().lower() == "x":
                 continue
 
+            # --- Patch: handle blank timestamp ---
+            timestamp_val = row_padded[0].strip() if len(row_padded) > 0 and row_padded[0] else ""
+            if not timestamp_val:
+                timestamp_val = datetime.now().strftime("%m/%d/%Y %H:%M:%S")
+
             has_starting_cue = "Yes" if "specific cue" in str(row_padded[5]).lower() else "No"
 
             mapped_row = [
-                row_padded[0],  # Timestamp
+                timestamp_val,  # Timestamp (or current time if blank)
                 row_padded[2],  # Leader
                 row_padded[3],  # Follower
                 row_padded[4],  # Division
@@ -538,7 +718,7 @@ def process_actions(
                 fg_values = (
                     fg_values[0] if fg_values and len(fg_values) > 0 else [""] * 4
                 )
-                timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
                 log.info(
                     f"Inserting data into '{HISTORY_SHEET_NAME}' sheet at next open row: timestamp={timestamp}, values={fg_values}"
                 )
@@ -773,19 +953,8 @@ def process_priority(service, spreadsheet_id, state):
             values[idx] = [""] * 5
             break
     if taken_row is not None:
-        # Compact the sheet after clearing the row
-        # Remove all empty rows, preserve order, pad to same total rows
-        non_empty = [r for r in values if any(str(cell).strip() for cell in r)]
-        empty = [r for r in values if not any(str(cell).strip() for cell in r)]
-        total_rows = len(values)
-        compacted = list(non_empty)
-        while len(compacted) < total_rows:
-            compacted.append([""] * 5)
-        # Logging compaction
-        log.info(
-            f"process_priority: Compacted Priority!B3:F — {len(non_empty)} non-empty, {len(empty)} empty rows"
-        )
-        # Update in-memory state and mark dirty
+        # Clean and compact the queue after clearing the row
+        compacted = clean_and_compact_queue(values, section_name)
         state.sections[section_name]["data"] = compacted
         state.mark_dirty(section_name)
         return taken_row
@@ -814,17 +983,8 @@ def process_non_priority(service, spreadsheet_id, state):
             values[idx] = [""] * 5
             break
     if taken_row is not None:
-        # Compact the sheet after clearing the row
-        non_empty = [r for r in values if any(str(cell).strip() for cell in r)]
-        empty = [r for r in values if not any(str(cell).strip() for cell in r)]
-        total_rows = len(values)
-        compacted = list(non_empty)
-        while len(compacted) < total_rows:
-            compacted.append([""] * 5)
-        log.info(
-            f"process_non_priority: Compacted NonPriority!B3:F — {len(non_empty)} non-empty, {len(empty)} empty rows"
-        )
-        # Update in-memory state and mark dirty
+        # Clean and compact the queue after clearing the row
+        compacted = clean_and_compact_queue(values, section_name)
         state.sections[section_name]["data"] = compacted
         state.mark_dirty(section_name)
         return taken_row
@@ -953,6 +1113,28 @@ def process_raw_submissions_in_memory(state: SpreadsheetState):
     """
     log.info("process_raw_submissions_in_memory: Starting processing in-memory")
 
+    # Configurable max number of Priority runs per couple
+    MAX_PRIORITY_RUNS = 3
+
+    service = sheets.get_sheets_service()
+    # --- Retrieve Floor Trial date and times from Current sheet ---
+    def get_value(service, spreadsheet_id, range_):
+        try:
+            rows = fetch_sheet_values(service, spreadsheet_id, range_)
+            return rows[0][0] if rows and rows[0] else ""
+        except Exception as e:
+            log.warning(f"Error getting value from {range_}: {e}")
+            return ""
+
+    trial_date = get_value(service, SHEET_ID, "Current!D15")
+    open_time = get_value(service, SHEET_ID, "Current!B17")
+    start_time = get_value(service, SHEET_ID, "Current!C17")
+    end_time = get_value(service, SHEET_ID, "Current!D17")
+
+    trial_open = parse_trial_datetime(trial_date, open_time)
+    trial_start = parse_trial_datetime(trial_date, start_time)
+    trial_end = parse_trial_datetime(trial_date, end_time)
+
     raw_data = state.sections["raw_submissions"]["data"]
     # Build priority_names and all_known_divs from the row-by-row mapping of division and flag
     priority_names = []
@@ -983,27 +1165,40 @@ def process_raw_submissions_in_memory(state: SpreadsheetState):
 
         timestamp, leader, follower, division, has_cue, cue_desc = row
         division = str(division).strip()
-        key = (leader.lower(), follower.lower(), division.lower())
+
+        # --- Parse submission timestamp and check if within window ---
+        try:
+            submission_time = datetime.strptime(str(timestamp).strip(), "%m/%d/%Y %H:%M:%S")
+        except Exception as e:
+            log.warning(f"Could not parse submission time '{timestamp}': {e}")
+            continue
+        if trial_open and trial_end and (submission_time < trial_open or submission_time > trial_end):
+            reason = "Outside accepted submission window"
+            rejected_data.append(row + [reason])
+            continue
 
         # Duplicate check (existing queues)
-        all_existing = {
-            tuple(str(c).strip().lower() for c in r[1:4])
-            for r in priority_data + nonpriority_data
-            if any(str(x).strip() for x in r)
-        }
-        if key in all_existing:
+        found_in_priority = False
+        found_in_nonpriority = False
+        for r in priority_data:
+            if any(str(x).strip() for x in r):
+                r_leader = str(r[1]).strip() if len(r) > 1 else ""
+                r_follower = str(r[2]).strip() if len(r) > 2 else ""
+                r_division = str(r[3]).strip() if len(r) > 3 else ""
+                if names_match(r_leader, r_follower, r_division, leader, follower, division):
+                    found_in_priority = True
+                    break
+        if not found_in_priority:
+            for r in nonpriority_data:
+                if any(str(x).strip() for x in r):
+                    r_leader = str(r[1]).strip() if len(r) > 1 else ""
+                    r_follower = str(r[2]).strip() if len(r) > 2 else ""
+                    r_division = str(r[3]).strip() if len(r) > 3 else ""
+                    if names_match(r_leader, r_follower, r_division, leader, follower, division):
+                        found_in_nonpriority = True
+                        break
+        if found_in_priority or found_in_nonpriority:
             log.info(f"Duplicate found for {leader} / {follower} / {division}")
-            # Determine which queue the duplicate was found in
-            found_in_priority = any(
-                tuple(str(c).strip().lower() for c in r[1:4]) == key
-                for r in priority_data
-                if any(str(x).strip() for x in r)
-            )
-            found_in_nonpriority = any(
-                tuple(str(c).strip().lower() for c in r[1:4]) == key
-                for r in nonpriority_data
-                if any(str(x).strip() for x in r)
-            )
             if found_in_priority:
                 rejected_data.append(row + ["Duplicate entry in Priority queue"])
             elif found_in_nonpriority:
@@ -1012,33 +1207,98 @@ def process_raw_submissions_in_memory(state: SpreadsheetState):
                 rejected_data.append(row + ["Duplicate entry in queue"])
             continue
 
+        # Also check in current_queue (prevent duplicate in current queue)
+        current_queue = state.sections["current_queue"]["data"]
+        found_in_current = False
+        for r in current_queue:
+            if any(str(x).strip() for x in r):
+                r_leader = str(r[1]).strip() if len(r) > 1 else ""
+                r_follower = str(r[2]).strip() if len(r) > 2 else ""
+                r_division = str(r[3]).strip() if len(r) > 3 else ""
+                if names_match(r_leader, r_follower, r_division, leader, follower, division):
+                    found_in_current = True
+                    break
+        if found_in_current:
+            log.info(f"Duplicate found for {leader} / {follower} / {division} in Current queue")
+            rejected_data.append(row + ["Duplicate entry in Current queue"])
+            continue
+
         # Determine destination
         is_priority = False
         for pname in priority_names:
             if pname and (division.startswith(pname) or pname.startswith(division)):
                 is_priority = True
                 break
+
+        # If is_priority, check run count in report_data and override if at limit
+        if is_priority:
+            # Find matching row in report_data
+            matching_report_row = None
+            for report_row in report_data:
+                if len(report_row) < 3:
+                    continue
+                r_leader = str(report_row[0]).strip()
+                r_follower = str(report_row[1]).strip()
+                r_division = str(report_row[2]).strip()
+                if names_match(r_leader, r_follower, r_division, leader, follower, division):
+                    matching_report_row = report_row
+                    break
+            if matching_report_row is not None:
+                # Column 4 (index 4) is run count
+                try:
+                    run_count = int(str(matching_report_row[4]).strip()) if len(matching_report_row) > 4 and str(matching_report_row[4]).strip() else 0
+                except Exception:
+                    run_count = 0
+                if run_count >= MAX_PRIORITY_RUNS:
+                    is_priority = False
+                    log.info(f"Moved {leader}/{follower}/{division} to NonPriority due to run count limit (>= {MAX_PRIORITY_RUNS}).")
+
         if is_priority:
             target_queue = priority_data
             dest = "Priority"
         else:
             target_queue = nonpriority_data
             dest = "NonPriority"
+
+        # --- Clean and compact target queue before appending ---
+        compacted_before = clean_and_compact_queue(target_queue, f"{dest}_queue")
+        target_queue[:] = compacted_before
         # Add as 5 columns: ["", leader, follower, division, cue_desc]
         target_queue.append(["", leader, follower, division, cue_desc])
-        # Append to report as [leader, follower, division, cue_desc, 0]
-        report_data.append([leader, follower, division, cue_desc, 0])
+        # Pad the queue to a consistent minimum length, e.g. 20 rows
+        while len(target_queue) < 20:
+            target_queue.append([""] * 5)
+        # --- Clean and compact again after appending ---
+        compacted_after = clean_and_compact_queue(target_queue, f"{dest}_queue")
+        target_queue[:] = compacted_after
+
+        # Before appending to report, check for duplicate in report_data
+        found_in_report = False
+        for r in report_data:
+            if len(r) < 3:
+                continue
+            r_leader = str(r[0]).strip()
+            r_follower = str(r[1]).strip()
+            r_division = str(r[2]).strip()
+            if names_match(r_leader, r_follower, r_division, leader, follower, division):
+                found_in_report = True
+                break
+        if found_in_report:
+            log.info(f"Skipping duplicate in report for {leader}/{follower}/{division}")
+        else:
+            # Append to report as [leader, follower, division, cue_desc, 0]
+            report_data.append([leader, follower, division, cue_desc, 0])
         processed += 1
         log.info(f"Moved row to {dest}: {row}")
 
     # Sort report by leader name (column 0)
-    # (Now first column is leader name, not timestamp)
     report_data.sort(key=lambda r: str(r[0]).lower() if r and len(r) > 0 else "")
 
     # Clear processed rows
     state.sections["raw_submissions"]["data"] = []
-    state.sections["priority_queue"]["data"] = priority_data
-    state.sections["non_priority_queue"]["data"] = nonpriority_data
+    # Clean and compact queues before updating state (final time)
+    state.sections["priority_queue"]["data"] = clean_and_compact_queue(priority_data, "priority_queue")
+    state.sections["non_priority_queue"]["data"] = clean_and_compact_queue(nonpriority_data, "non_priority_queue")
     state.sections["report"]["data"] = report_data
     state.sections["rejected_submissions"]["data"] = rejected_data
 
@@ -1051,84 +1311,64 @@ def process_raw_submissions_in_memory(state: SpreadsheetState):
 
 def update_floor_trial_status(service, spreadsheet_id):
     """
-    Helper to update the Floor Trial status in Current!B19 (merged B19:D19) based on date/time fields.
-    Reads Current!D15 (date), Current!B17 (start time), Current!D17 (end time).
+    Update Floor Trial status (Current!B19:D19) using UTC datetimes in:
+      - Current!B15 (Open UTC)
+      - Current!B16 (Start UTC)
+      - Current!B17 (End UTC)
     """
     try:
-        # Read values
-        ranges = [FLOOR_TRIAL_DATE_CELL, FLOOR_TRIAL_START_CELL, FLOOR_TRIAL_END_CELL]
+        ranges = ["Current!B15", "Current!B16", "Current!B17"]
         result = (
             service.spreadsheets()
             .values()
             .batchGet(spreadsheetId=spreadsheet_id, ranges=ranges)
             .execute()
         )
-        d15_rows = result.get("valueRanges", [])[0].get("values", [])
-        b17_rows = result.get("valueRanges", [])[1].get("values", [])
-        d17_rows = result.get("valueRanges", [])[2].get("values", [])
-        date_str = d15_rows[0][0].strip() if d15_rows and d15_rows[0] else ""
-        start_time_str = b17_rows[0][0].strip() if b17_rows and b17_rows[0] else ""
-        end_time_str = d17_rows[0][0].strip() if d17_rows and d17_rows[0] else ""
-        log.info(
-            f"update_floor_trial_status: Read date='{date_str}', start='{start_time_str}', end='{end_time_str}'"
-        )
-        # Parse date and times
+        open_val = result.get("valueRanges", [])[0].get("values", [])
+        start_val = result.get("valueRanges", [])[1].get("values", [])
+        end_val = result.get("valueRanges", [])[2].get("values", [])
+        open_str = open_val[0][0].strip() if open_val and open_val[0] else ""
+        start_str = start_val[0][0].strip() if start_val and start_val[0] else ""
+        end_str = end_val[0][0].strip() if end_val and end_val[0] else ""
+
+        def parse_utc(s):
+            from datetime import datetime, timezone
+            if not s:
+                return None
+            for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
+                try:
+                    return datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
+                except Exception:
+                    continue
+            return None
+
+        dt_open = parse_utc(open_str)
+        dt_start = parse_utc(start_str)
+        dt_end = parse_utc(end_str)
+        now_utc = datetime.now(timezone.utc)
+
+        log.info(f"update_floor_trial_status: Open={dt_open}, Start={dt_start}, End={dt_end}, Now={now_utc}")
+
         status = "Floor Trial Not Active"
-        dt_start = None
-        dt_end = None
-        if date_str and start_time_str and end_time_str:
-            try:
-                # Accept date as YYYY-MM-DD or MM/DD/YYYY or DD/MM/YYYY
-                # Try common formats
-                date_formats = ["%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y"]
-                date_obj = None
-                for fmt in date_formats:
-                    try:
-                        date_obj = datetime.strptime(date_str, fmt)
-                        break
-                    except Exception:
-                        continue
-                if not date_obj:
-                    raise ValueError(f"Could not parse date '{date_str}'")
+        if dt_start and dt_end:
+            if dt_start <= now_utc <= dt_end:
+                status = "Floor Trial In Progress"
+            #elif now_utc < dt_start:
+            #    status = "Floor Trials Open for Submissions"
+            #elif now_utc > dt_end:
+            #    status = "Floor Trials Closed"
 
-                # Accept time as HH:MM or HH:MM:SS or with AM/PM
-                def parse_time(tstr):
-                    for fmt in ("%H:%M", "%H:%M:%S", "%I:%M %p", "%I:%M:%S %p"):
-                        try:
-                            return datetime.strptime(tstr, fmt).time()
-                        except Exception:
-                            continue
-                    raise ValueError(f"Could not parse time '{tstr}'")
-
-                start_time_obj = parse_time(start_time_str)
-                end_time_obj = parse_time(end_time_str)
-                dt_start = datetime.combine(date_obj.date(), start_time_obj)
-                dt_end = datetime.combine(date_obj.date(), end_time_obj)
-                now_utc = datetime.utcnow()
-                log.info(
-                    f"update_floor_trial_status: Computed dt_start={dt_start.isoformat()}, dt_end={dt_end.isoformat()}, now_utc={now_utc.isoformat()}"
-                )
-                if dt_start <= now_utc <= dt_end:
-                    status = "Floor Trial In Progress"
-            except Exception as e:
-                log.warning(f"update_floor_trial_status: Error parsing datetimes: {e}")
-        else:
-            log.info(
-                "update_floor_trial_status: One or more date/time fields are empty; status will be Not Active."
-            )
-        # Update merged cell Current!B19 (B19:D19)
-        update_range = FLOOR_TRIAL_STATUS_RANGE
         service.spreadsheets().values().update(
             spreadsheetId=spreadsheet_id,
-            range=update_range,
+            range="Current!B19:D19",
             valueInputOption="RAW",
             body={"values": [[status, "", ""]]},
         ).execute()
-        log.info(
-            f"update_floor_trial_status: Updated {update_range} with status='{status}'"
-        )
+        log.info(f"update_floor_trial_status: Updated status to '{status}'")
+        return "In Progress" in status
     except Exception as e:
         log.error(f"update_floor_trial_status: Exception occurred: {e}", exc_info=True)
+        return False
 
 
 def isRunning(service, spreadsheet_id: str) -> bool:
@@ -1154,6 +1394,10 @@ def isRunning(service, spreadsheet_id: str) -> bool:
         log.warning("Automation stopped: Could not fetch automation control value.")
         return False
 
+
+# ---------------------------------------------------------------------
+# New UTC-based run_watcher implementation
+# ---------------------------------------------------------------------
 def run_watcher(
     spreadsheet_id: str,
     sheet_range: str,
@@ -1161,7 +1405,15 @@ def run_watcher(
     duration_minutes: int,
     monitor_range: str,
 ):
-    log.info("Watcher starting")
+    """
+    Main watcher loop for Floor Trials, using UTC time for all polling and timing.
+    - Watches the sheet for a fixed duration (duration_minutes) from UTC now.
+    - Polls at interval_seconds using UTC time.
+    - Syncs in-memory state to Google Sheets every SYNC_INTERVAL_SECONDS.
+    - Updates Current!D2 with UTC timestamp after each sync.
+    - Handles actions, imports, and queue population in UTC.
+    """
+    log.info("Watcher starting (UTC-based)")
     service = sheets.get_sheets_service()
 
     if not isRunning(service, spreadsheet_id):
@@ -1172,24 +1424,24 @@ def run_watcher(
     state.load_from_sheets(service, spreadsheet_id)
     state.visualize()
 
-    end_time = datetime.utcnow() + timedelta(minutes=duration_minutes)
+    utc_end_time = datetime.now(timezone.utc) + timedelta(minutes=duration_minutes)
     log.info(
         f"Watcher starting: spreadsheet_id={spreadsheet_id}, range={sheet_range}, "
-        f"interval={interval_seconds}s, duration={duration_minutes}min, monitor_range={monitor_range}"
+        f"interval={interval_seconds}s, duration={duration_minutes}min (UTC), monitor_range={monitor_range}"
     )
     iteration = 0
     last_sync_time = time.time()
     ACTION_RANGE = "Current!C6:C11"
-    while datetime.utcnow() < end_time:
+    while datetime.now(timezone.utc) < utc_end_time:
         iteration += 1
-        log.debug(f"Poll iteration {iteration} start")
-        start = time.time()
+        log.debug(f"Poll iteration {iteration} start (UTC)")
+        poll_start = time.time()
         try:
             # Update Floor Trial status before processing submissions/actions
-            update_floor_trial_status(service, spreadsheet_id)
+            in_progress = update_floor_trial_status(service, spreadsheet_id)
             # Import external submissions before processing raw submissions
             import_external_submissions(service, state, EXTERNAL_SOURCE_SHEET_ID)
-            # --- New: process actions in memory before raw submissions ---
+            # --- Process actions in memory before raw submissions ---
             action_values = fetch_sheet_values(service, spreadsheet_id, ACTION_RANGE)
             process_actions_in_memory(state, action_values)
             # --- End new logic ---
@@ -1203,34 +1455,73 @@ def run_watcher(
                 log.debug(
                     "Detected at least one non-empty monitored cell; processing changes."
                 )
-                #process_actions(service, spreadsheet_id, monitor_range, current_values)
+                # Optionally: process_actions(service, spreadsheet_id, monitor_range, current_values)
             else:
                 log.debug("No non-empty values in monitored cells this poll iteration.")
             # Fill empty rows in Current!E6:I11 from queues after processing actions
-            fill_current_from_queues(service, spreadsheet_id, state)
+            if in_progress:
+                fill_current_from_queues(service, spreadsheet_id, state)
+            else:
+                log.info("⏸️ Floor Trial not in progress — skipping current queue population")
         except Exception as e:
             log.error(f"Error during polling: {e}", exc_info=True)
-        elapsed = time.time() - start
+        elapsed = time.time() - poll_start
         sleep_time = max(0, interval_seconds - elapsed)
         state.visualize()
+        # Heartbeat: write current UTC time to Current!D2 every loop for accuracy
+        try:
+            utc_now_str_iter = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+            service.spreadsheets().values().update(
+                spreadsheetId=spreadsheet_id,
+                range="Current!D2",
+                valueInputOption="RAW",
+                body={"values": [[utc_now_str_iter]]},
+            ).execute()
+            log.debug(f"Heartbeat -> Current!D2 set to {utc_now_str_iter}")
+        except Exception as e:
+            log.error(f"Failed to update Current!D2 heartbeat: {e}", exc_info=True)
         # Periodic in-memory sync to Sheets every SYNC_INTERVAL_SECONDS
         now = time.time()
         if now - last_sync_time >= SYNC_INTERVAL_SECONDS:
-            log.info(f"Periodic sync: Writing in-memory state to Sheets (every {SYNC_INTERVAL_SECONDS}s)")
+            log.info(f"Periodic sync: Writing in-memory state to Sheets (every {SYNC_INTERVAL_SECONDS}s, UTC-based)")
             try:
                 state.sync_to_sheets(service, spreadsheet_id)
+                # --- Update Current!D2 with UTC timestamp after spreadsheet sync ---
+                try:
+                    utc_now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                    service.spreadsheets().values().update(
+                        spreadsheetId=spreadsheet_id,
+                        range="Current!D2",
+                        valueInputOption="RAW",
+                        body={"values": [[utc_now_str]]},
+                    ).execute()
+                    log.info(f"Updated Current!D2 with UTC timestamp {utc_now_str}")
+                except Exception as e:
+                    log.error(f"Failed to update Current!D2 timestamp: {e}", exc_info=True)
                 last_sync_time = now
             except Exception as e:
                 log.error(f"Periodic sync failed: {e}", exc_info=True)
         log.debug(
-            f"Poll iteration {iteration} took {format_duration(elapsed)}; sleeping for {format_duration(sleep_time)} …"
+            f"Poll iteration {iteration} took {format_duration(elapsed)}; sleeping for {format_duration(sleep_time)} (UTC) …"
         )
         time.sleep(sleep_time)
-        log.debug(f"Poll iteration {iteration} end")
+        log.debug(f"Poll iteration {iteration} end (UTC)")
 
-    # Sync in-memory state to Sheets before finishing
+    # Final sync in-memory state to Sheets before finishing
     state.sync_to_sheets(service, spreadsheet_id)
-    log.info("Watcher finished — runtime limit reached.")
+    # --- Update Current!D2 with UTC timestamp after final spreadsheet sync ---
+    try:
+        utc_now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range="Current!D2",
+            valueInputOption="RAW",
+            body={"values": [[utc_now_str]]},
+        ).execute()
+        log.info(f"Updated Current!D2 with UTC timestamp {utc_now_str}")
+    except Exception as e:
+        log.error(f"Failed to update Current!D2 timestamp: {e}", exc_info=True)
+    log.info("Watcher finished — runtime limit reached (UTC).")
 
 
 def main():
@@ -1238,6 +1529,12 @@ def main():
     log.info(
         f"Configuration loaded: SHEET_ID={SHEET_ID}, SHEET_RANGE={SHEET_RANGE}, INTERVAL_SECONDS={INTERVAL_SECONDS}, DURATION_MINUTES={DURATION_MINUTES}, MONITOR_RANGE={MONITOR_RANGE}"
     )
+    service = sheets.get_sheets_service()
+    # UTC verification diagnostics (if enabled)
+    if DEBUG_UTC_MODE:
+        verify_utc_timing(service, SHEET_ID)
+    # Load state from sheets at startup
+    state = load_state_from_sheets(service, SHEET_ID)
     run_watcher(
         SHEET_ID, SHEET_RANGE, INTERVAL_SECONDS, DURATION_MINUTES, MONITOR_RANGE
     )
