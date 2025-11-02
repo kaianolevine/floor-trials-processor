@@ -8,6 +8,135 @@ and when values change in the watched sheet it will trigger processing (moving r
 
 import time
 from datetime import datetime, timedelta
+def process_actions_in_memory(state: "SpreadsheetState", action_values: "List[List[str]]"):
+    """
+    Processes action commands from action_values (corresponding to C6:C11).
+    Modifies state.sections["current_queue"] and state.sections["history"] in memory.
+    """
+    import copy
+    # The current_queue is always 6 rows, 5 columns (E6:I11)
+    current_queue = state.sections["current_queue"]["data"]
+    history = state.sections["history"]["data"]
+    # Normalize current_queue to 6 rows, 5 cols
+    while len(current_queue) < 6:
+        current_queue.append([""] * 5)
+    for idx in range(len(current_queue)):
+        row = current_queue[idx]
+        if len(row) < 5:
+            current_queue[idx] += [""] * (5 - len(row))
+        elif len(row) > 5:
+            current_queue[idx] = row[:5]
+    # Normalize history rows to at least 5 columns (timestamp + 4 data)
+    for i in range(len(history)):
+        if len(history[i]) < 5:
+            history[i] += [""] * (5 - len(history[i]))
+        elif len(history[i]) > 5:
+            history[i] = history[i][:5]
+    # Prepare for deferred "-" rows
+    deferred_minus_rows = []
+    # Process each action (C6:C11 maps to current_queue rows 0-5)
+    for idx, row in enumerate(action_values):
+        action = row[0].strip() if row and len(row) > 0 else ""
+        action_lc = action.lower()
+        if action_lc == "o":
+            # Move row to history with timestamp, then clear row in current_queue
+            queue_row = current_queue[idx]
+            if any(str(cell).strip() for cell in queue_row):
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                # Only include timestamp, leader, follower, division columns
+                new_history_row = [timestamp, queue_row[1], queue_row[2], queue_row[3]]
+                # Pad to 5 columns if needed
+                if len(new_history_row) < 5:
+                    new_history_row += [""] * (5 - len(new_history_row))
+                history.append(new_history_row)
+                # --- Increment run count in report section ---
+                try:
+                    report_data = state.sections["report"]["data"]
+                    leader = str(queue_row[1]).strip()
+                    follower = str(queue_row[2]).strip()
+                    division = str(queue_row[3]).strip()
+                    found = False
+                    for report_row in report_data:
+                        # Defensive: ensure at least 5 columns
+                        if len(report_row) < 5:
+                            report_row += [""] * (5 - len(report_row))
+                        # Report columns: [Leader, Follower, Division, Cue, RunCount]
+                        r_leader = str(report_row[0]).strip()
+                        r_follower = str(report_row[1]).strip()
+                        r_division = str(report_row[2]).strip()
+                        if (
+                            r_leader.lower() == leader.lower()
+                            and r_follower.lower() == follower.lower()
+                            and r_division.lower() == division.lower()
+                        ):
+                            # Column 4 (index 4) is run count
+                            try:
+                                count = int(str(report_row[4]).strip()) if str(report_row[4]).strip() else 0
+                            except Exception:
+                                count = 0
+                            report_row[4] = str(count + 1)
+                            state.mark_dirty("report")
+                            log.info(f"Incremented run count for {leader}/{follower}/{division}")
+                            found = True
+                            break
+                    # Optionally log if not found in report
+                    if not found:
+                        log.debug(f"No matching report row found for {leader}/{follower}/{division} to increment run count.")
+                    # Sort report data by leader name (column 0)
+                    report_data.sort(key=lambda r: str(r[0]).lower() if len(r) > 0 else "")
+                    state.sections["report"]["data"] = report_data
+                    state.mark_dirty("report")
+                    log.info("Sorted report data by leader name after run count update.")
+                except Exception as e:
+                    log.error(f"Error incrementing run count in report: {e}", exc_info=True)
+                # --- End increment run count ---
+            # Clear the row in current_queue
+            current_queue[idx] = [""] * 5
+            # Clear the action so it doesn't repeat
+            action_values[idx][0] = ""
+        elif action_lc == "x":
+            # Just clear the row in current_queue
+            current_queue[idx] = [""] * 5
+            # Clear the action so it doesn't repeat
+            action_values[idx][0] = ""
+        elif action_lc == "-":
+            # Store the row, clear it, append later after compaction
+            row_copy = copy.deepcopy(current_queue[idx])
+            if any(str(cell).strip() for cell in row_copy):
+                deferred_minus_rows.append(row_copy)
+            current_queue[idx] = [""] * 5
+            # Clear the action so it doesn't repeat
+            action_values[idx][0] = ""
+        else:
+            # Unrecognized or empty: do nothing
+            continue
+    # Compact current_queue: move all non-empty rows up, empty rows down, preserve order
+    non_empty = [r for r in current_queue if any(str(cell).strip() for cell in r)]
+    empty = [r for r in current_queue if not any(str(cell).strip() for cell in r)]
+    compacted = list(non_empty)
+    # After compaction, append deferred "-" rows to end of compacted non-empty rows
+    compacted += deferred_minus_rows
+    # Truncate to 6 rows, pad with empty if needed
+    compacted = compacted[:6]
+    while len(compacted) < 6:
+        compacted.append([""] * 5)
+    # Update current_queue in state
+    state.sections["current_queue"]["data"] = compacted
+    state.sections["history"]["data"] = history
+    # Mark both as dirty
+    state.mark_dirty("current_queue")
+    state.mark_dirty("history")
+    # Push cleared actions back to Google Sheets after processing
+    service = sheets.get_sheets_service()
+    service.spreadsheets().values().update(
+        spreadsheetId=SHEET_ID,
+        range="Current!C6:C11",
+        valueInputOption="RAW",
+        body={"values": action_values},
+    ).execute()
+    log.info("process_actions_in_memory: Cleared commands written back to sheet.")
+    # Optionally mark actions as cleared or log debug note
+    log.debug("process_actions_in_memory: Cleared processed commands from action_values after handling.")
 from typing import Any, List, Optional
 
 from kaiano_common_utils import google_sheets as sheets
@@ -21,9 +150,9 @@ SHEET_ID = "1JsWQDnxHis79dHcdlZZlgO1HS5Ldlq8zvLD1FdEwBQ4"
 # Main range to monitor in the Current sheet (all columns)
 SHEET_RANGE = "Current!A:Z"
 # Polling interval in seconds for the watcher
-INTERVAL_SECONDS = 20
+INTERVAL_SECONDS = 10
 # Periodic sync interval in seconds for writing memory to Sheets
-SYNC_INTERVAL_SECONDS = 60
+SYNC_INTERVAL_SECONDS = 10
 # Total duration to run the watcher in minutes
 DURATION_MINUTES = 60
 # Range of monitored cells (actions) in the Current sheet
@@ -42,7 +171,7 @@ REPORT_RANGE = "Report!A4:E"
 # Range for the current queue in the Current sheet
 CURRENT_QUEUE_RANGE = "Current!E6:I11"
 # Range for compaction in the Current sheet
-COMPACTION_RANGE = "Current!E5:I12"
+COMPACTION_RANGE = "Current!E6:J12"
 # Range for Floor Trial status display
 FLOOR_TRIAL_STATUS_RANGE = "Current!B19:D19"
 # Cell for Floor Trial date
@@ -58,11 +187,11 @@ PRIORITY_DIVISION_RANGE = "Current!F16:F30"
 # Range for Priority flag (X) list
 PRIORITY_FLAG_RANGE = "Current!G16:G30"
 # Range for Priority queue
-PRIORITY_QUEUE_RANGE = "Priority!C3:F"
+PRIORITY_QUEUE_RANGE = "Priority!B3:F"
 # Range for NonPriority queue
-NON_PRIORITY_QUEUE_RANGE = "NonPriority!C3:F"
+NON_PRIORITY_QUEUE_RANGE = "NonPriority!B3:F"
 # Range for rejected submissions
-REJECTED_SUBMISSIONS_RANGE = "RejectedSubmissions!B:G"
+REJECTED_SUBMISSIONS_RANGE = "RejectedSubmissions!B:H"
 
 # External source spreadsheet for importing new submissions
 EXTERNAL_SOURCE_SHEET_ID = "193QJBSQKkW1-c2Z3WHv3o2rbX-zZwn9fnmEACj88cEw"
@@ -705,18 +834,18 @@ def process_non_priority(service, spreadsheet_id, state):
 
 def fill_current_from_queues(service, spreadsheet_id, state):
     """
-    Fill empty rows in the in-memory Current queue from Priority and NonPriority queues using SpreadsheetState.
+    Fill empty rows in the in-memory Current queue from Priority and NonPriority queues using only SpreadsheetState.
     For each empty row in the current queue:
-      - Try to get a row from the priority queue.
-      - If that returns nothing, and fewer than the reserved priority rows are filled, try the non-priority queue.
+      - Try to get a row from the in-memory priority queue.
+      - If that returns nothing, try the in-memory non-priority queue.
       - If a row is returned, insert it into the first available empty slot in the current_queue memory structure.
-      - Mark the current_queue section dirty.
+      - Mark current_queue, priority_queue, or non_priority_queue as dirty if modified.
+      - Log the source queue and compaction status after each operation.
     Returns True if any rows were filled, False otherwise.
     """
-    # Current queue in memory: always 6 rows, 5 cols (E6:I11)
     current_section = state.sections["current_queue"]
     current_data = current_section["data"]
-    # Pad to always 6 rows of 5 cells
+    # Always 6 rows, 5 cols (E–I, no placeholder)
     while len(current_data) < 6:
         current_data.append([""] * 5)
     for idx in range(len(current_data)):
@@ -724,39 +853,91 @@ def fill_current_from_queues(service, spreadsheet_id, state):
             current_data[idx] += [""] * (5 - len(current_data[idx]))
         elif len(current_data[idx]) > 5:
             current_data[idx] = current_data[idx][:5]
-    # Track if any changes made
-    changes_made = False
-    # Count how many rows are filled with data (for reserved rows logic)
+    # Helper: filled row is all 5 columns non-empty (or any non-empty cell in all 5 columns)
     def is_filled(row):
-        return any(str(cell).strip() for cell in row)
-    # Reserved: rows 6-9 (idx 0-3) are for Priority, rows 10-11 (idx 4-5) for NonPriority
-    reserved_priority_rows = 4
-    # For each empty row, try to fill
+        # Consider filled if any of the 5 columns have data
+        return any(str(cell).strip() for cell in row[:5])
+    changes_made = False
     for idx, row in enumerate(current_data):
         row_num = 6 + idx
-        if not is_filled(row):
-            # Try Priority first
-            data = process_priority(service, spreadsheet_id, state)
-            if data is None and idx < reserved_priority_rows:
-                # Try NonPriority if Priority empty and this is within reserved priority rows
-                data = process_non_priority(service, spreadsheet_id, state)
-            elif data is None and idx >= reserved_priority_rows:
-                # For non-reserved rows (idx 4,5), only try NonPriority
-                data = process_non_priority(service, spreadsheet_id, state)
-            if data is not None:
-                # Insert into in-memory current queue
-                current_data[idx] = data
-                state.mark_dirty("current_queue")
-                log.info(
-                    f"fill_current_from_queues: Filled Current queue row {row_num} with: {data}"
-                )
-                changes_made = True
-            else:
-                log.info(
-                    f"fill_current_from_queues: No data available to fill row {row_num}."
-                )
+        if is_filled(row):
+            continue
+        filled_from = None
+        # Normalize priority_queue rows to 5 columns
+        pq = state.sections["priority_queue"]["data"]
+        pq_rows = [r + [""] * (5 - len(r)) if len(r) < 5 else r[:5] for r in pq]
+        taken_priority = None
+        for pq_idx, pq_row in enumerate(pq_rows):
+            if any(str(cell).strip() for cell in pq_row):
+                taken_priority = pq_row
+                pq_rows[pq_idx] = [""] * 5
+                log.info(f"fill_current_from_queues: Taking row {pq_idx+3} from Priority queue: {taken_priority}")
+                filled_from = "Priority"
+                break
+        if taken_priority is not None:
+            # Compact Priority queue in memory
+            non_empty = [r for r in pq_rows if any(str(cell).strip() for cell in r)]
+            empty = [r for r in pq_rows if not any(str(cell).strip() for cell in r)]
+            total = len(pq_rows)
+            compacted = list(non_empty)
+            while len(compacted) < total:
+                compacted.append([""] * 5)
+            state.sections["priority_queue"]["data"] = compacted
+            state.mark_dirty("priority_queue")
+            log.info(f"fill_current_from_queues: Compacted Priority queue — {len(non_empty)} non-empty, {len(empty)} empty rows")
+            # Insert taken row directly (5 columns, E–I)
+            current_data[idx] = taken_priority
+            # Pad to 5 columns in case
+            if len(current_data[idx]) < 5:
+                current_data[idx] += [""] * (5 - len(current_data[idx]))
+            elif len(current_data[idx]) > 5:
+                current_data[idx] = current_data[idx][:5]
+            state.mark_dirty("current_queue")
+            log.info(f"fill_current_from_queues: Filled Current queue row {row_num} (cols E–I) from Priority queue: {taken_priority}")
+            changes_made = True
+            continue
+        # If not Priority, try NonPriority, but only for rows 6–9 (row_num 6,7,8,9)
+        if row_num > 9:
+            log.info(f"fill_current_from_queues: Skipping NonPriority for row {row_num} (bottom two slots must be Priority only).")
+            log.debug(f"fill_current_from_queues: Only Priority queue may fill Current rows 10 and 11 (row {row_num}).")
+            log.info(f"fill_current_from_queues: No data available to fill row {row_num}.")
+            continue
+        npq = state.sections["non_priority_queue"]["data"]
+        npq_rows = [r + [""] * (5 - len(r)) if len(r) < 5 else r[:5] for r in npq]
+        taken_nonpriority = None
+        for npq_idx, npq_row in enumerate(npq_rows):
+            if any(str(cell).strip() for cell in npq_row):
+                taken_nonpriority = npq_row
+                npq_rows[npq_idx] = [""] * 5
+                log.info(f"fill_current_from_queues: Taking row {npq_idx+3} from NonPriority queue: {taken_nonpriority}")
+                filled_from = "NonPriority"
+                break
+        if taken_nonpriority is not None:
+            # Compact NonPriority queue in memory
+            non_empty = [r for r in npq_rows if any(str(cell).strip() for cell in r)]
+            empty = [r for r in npq_rows if not any(str(cell).strip() for cell in r)]
+            total = len(npq_rows)
+            compacted = list(non_empty)
+            while len(compacted) < total:
+                compacted.append([""] * 5)
+            state.sections["non_priority_queue"]["data"] = compacted
+            state.mark_dirty("non_priority_queue")
+            log.info(f"fill_current_from_queues: Compacted NonPriority queue — {len(non_empty)} non-empty, {len(empty)} empty rows")
+            # Insert taken row directly (5 columns, E–I)
+            current_data[idx] = taken_nonpriority
+            if len(current_data[idx]) < 5:
+                current_data[idx] += [""] * (5 - len(current_data[idx]))
+            elif len(current_data[idx]) > 5:
+                current_data[idx] = current_data[idx][:5]
+            state.mark_dirty("current_queue")
+            log.info(f"fill_current_from_queues: Filled Current queue row {row_num} (cols E–I) from NonPriority queue: {taken_nonpriority}")
+            changes_made = True
+            continue
+        log.info(f"fill_current_from_queues: No data available to fill row {row_num}.")
     if not changes_made:
         log.info("fill_current_from_queues: No empty rows filled.")
+    else:
+        log.info("fill_current_from_queues: Current queue now starts at column F (E is first column of range); all rows are 5 columns: [E, F, G, H, I].")
     return changes_made
 
 
@@ -806,7 +987,7 @@ def process_raw_submissions_in_memory(state: SpreadsheetState):
 
         # Duplicate check (existing queues)
         all_existing = {
-            tuple(str(c).strip().lower() for c in r[:3])
+            tuple(str(c).strip().lower() for c in r[1:4])
             for r in priority_data + nonpriority_data
             if any(str(x).strip() for x in r)
         }
@@ -814,12 +995,12 @@ def process_raw_submissions_in_memory(state: SpreadsheetState):
             log.info(f"Duplicate found for {leader} / {follower} / {division}")
             # Determine which queue the duplicate was found in
             found_in_priority = any(
-                tuple(str(c).strip().lower() for c in r[:3]) == key
+                tuple(str(c).strip().lower() for c in r[1:4]) == key
                 for r in priority_data
                 if any(str(x).strip() for x in r)
             )
             found_in_nonpriority = any(
-                tuple(str(c).strip().lower() for c in r[:3]) == key
+                tuple(str(c).strip().lower() for c in r[1:4]) == key
                 for r in nonpriority_data
                 if any(str(x).strip() for x in r)
             )
@@ -840,19 +1021,18 @@ def process_raw_submissions_in_memory(state: SpreadsheetState):
         if is_priority:
             target_queue = priority_data
             dest = "Priority"
-        else:  # any(division.startswith(known) or known.startswith(division) for known in all_known_divs):
+        else:
             target_queue = nonpriority_data
             dest = "NonPriority"
-        # else:
-        #     rejected_data.append(row + ["Unknown division"])
-        #     continue
-
-        target_queue.append([leader, follower, division, cue_desc])
-        report_data.append([timestamp, leader, follower, division, 0])
+        # Add as 5 columns: ["", leader, follower, division, cue_desc]
+        target_queue.append(["", leader, follower, division, cue_desc])
+        # Append to report as [leader, follower, division, cue_desc, 0]
+        report_data.append([leader, follower, division, cue_desc, 0])
         processed += 1
         log.info(f"Moved row to {dest}: {row}")
 
-    # Sort report by column A (timestamp)
+    # Sort report by leader name (column 0)
+    # (Now first column is leader name, not timestamp)
     report_data.sort(key=lambda r: str(r[0]).lower() if r and len(r) > 0 else "")
 
     # Clear processed rows
@@ -999,6 +1179,7 @@ def run_watcher(
     )
     iteration = 0
     last_sync_time = time.time()
+    ACTION_RANGE = "Current!C6:C11"
     while datetime.utcnow() < end_time:
         iteration += 1
         log.debug(f"Poll iteration {iteration} start")
@@ -1008,6 +1189,10 @@ def run_watcher(
             update_floor_trial_status(service, spreadsheet_id)
             # Import external submissions before processing raw submissions
             import_external_submissions(service, state, EXTERNAL_SOURCE_SHEET_ID)
+            # --- New: process actions in memory before raw submissions ---
+            action_values = fetch_sheet_values(service, spreadsheet_id, ACTION_RANGE)
+            process_actions_in_memory(state, action_values)
+            # --- End new logic ---
             process_raw_submissions_in_memory(state)
             current_values = fetch_sheet_values(service, spreadsheet_id, monitor_range)
             # Instead of change detection, process if any monitored cell is non-empty
@@ -1022,7 +1207,7 @@ def run_watcher(
             else:
                 log.debug("No non-empty values in monitored cells this poll iteration.")
             # Fill empty rows in Current!E6:I11 from queues after processing actions
-            #fill_current_from_queues(service, spreadsheet_id)
+            fill_current_from_queues(service, spreadsheet_id, state)
         except Exception as e:
             log.error(f"Error during polling: {e}", exc_info=True)
         elapsed = time.time() - start
