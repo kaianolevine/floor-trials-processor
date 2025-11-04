@@ -62,9 +62,6 @@ def run_watcher(
     log.info("Watcher starting (UTC-based)")
     service = sheets.get_sheets_service()
 
-    if not isRunning(service, spreadsheet_id):
-        return
-
     st = SpreadsheetState()
     st.load_from_sheets(service, spreadsheet_id)
     st.visualize()
@@ -82,6 +79,10 @@ def run_watcher(
     ACTION_RANGE = config.MONITOR_RANGE
 
     while datetime.now(timezone.utc) < utc_end_time:
+        if not isRunning(service, spreadsheet_id):
+            log.info("Automation control cell indicates stop — exiting watcher loop.")
+            break
+
         iteration += 1
         log.debug(f"Poll iteration {iteration} start (UTC)")
         poll_start = time.time()
