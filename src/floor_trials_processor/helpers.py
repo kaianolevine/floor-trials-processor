@@ -3,7 +3,7 @@ from typing import Any, List
 
 from kaiano_common_utils import logger as log
 
-import floor_trials_processor.state.SpreadsheetState as SpreadsheetState
+from floor_trials_processor.state import SpreadsheetState
 
 
 def fetch_sheet_values(
