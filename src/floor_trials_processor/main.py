@@ -86,7 +86,7 @@ def update_floor_trial_status(service, spreadsheet_id):
 def isRunning(service, spreadsheet_id: str) -> bool:
     # Check automation control cell value before running watcher loop
     try:
-        h2_value_rows = processing.fetch_sheet_values(
+        h2_value_rows = helpers.fetch_sheet_values(
             service, spreadsheet_id, config.AUTOMATION_CONTROL_CELL
         )
         h2_val = h2_value_rows[0][0] if h2_value_rows and h2_value_rows[0] else ""
@@ -153,14 +153,14 @@ def run_watcher(
                 service, st, config.EXTERNAL_SOURCE_SHEET_ID
             )
 
-            action_values = processing.fetch_sheet_values(
+            action_values = helpers.fetch_sheet_values(
                 service, spreadsheet_id, ACTION_RANGE
             )
             processing.process_actions_in_memory(st, action_values)
 
             processing.process_raw_submissions_in_memory(st)
 
-            current_values = processing.fetch_sheet_values(
+            current_values = helpers.fetch_sheet_values(
                 service, spreadsheet_id, monitor_range
             )
             any_nonempty = any(
