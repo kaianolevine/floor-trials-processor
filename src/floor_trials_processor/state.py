@@ -45,7 +45,7 @@ class SpreadsheetState:
                 "data": [],
                 "cols": 7,
             },
-            "report": {
+            "reports": {
                 "range": config.REPORT_RANGE,
                 "data": [],
                 "cols": 5,
@@ -236,7 +236,9 @@ def load_state_from_sheets(service, spreadsheet_id):
     state.sections["non_priority_queue"]["data"] = helpers.clean_and_compact_queue(
         nonpriority, "non_priority_queue"
     )
-    state.sections["report"]["data"] = report
+    if "report" in state.sections and "reports" not in state.sections:
+        state.sections["reports"] = state.sections.pop("report")
+    state.sections["reports"]["data"] = report
     state.sections["rejected_submissions"]["data"] = rejected
 
     return state

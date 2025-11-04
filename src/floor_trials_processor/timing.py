@@ -110,32 +110,33 @@ def verify_utc_timing(service, sheet_id) -> None:
 # Helper: Parse trial date and time into datetime
 # ---------------------------------------------------------------------
 def parse_trial_datetime(date_str: str, time_str: str) -> Optional[datetime]:
-    """
-    Parse a combined date/time or standalone UTC datetime string into a datetime.
-    Accepts either:
-      - date in M/D/YYYY and time in H:MM AM/PM, or
-      - full UTC datetime (YYYY-MM-DD HH:MM[:SS])
-    """
-
+    """Parse combined or standalone UTC datetime strings into a timezone-aware datetime."""
     try:
-        # Case 1: Combined full UTC datetime
-        full_str = (date_str or "") + " " + (time_str or "")
-        full_str = full_str.strip()
-        if not full_str:
-            raise ValueError("No datetime provided")
+        date_str = (date_str or "").strip()
+        time_str = (time_str or "").strip()
 
-        # Try known UTC formats
-        for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
-            try:
-                return datetime.strptime(full_str, fmt).replace(tzinfo=timezone.utc)
-            except Exception:
-                continue
+        # Case 0: If one field already looks like a full UTC datetime, parse it directly
+        for val in (date_str, time_str):
+            for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
+                try:
+                    return datetime.strptime(val, fmt).replace(tzinfo=timezone.utc)
+                except Exception:
+                    continue
 
-        # Case 2: Legacy separate date + time fields
+        # Case 1: Combined string (legacy fallback)
+        if date_str and time_str:
+            full_str = f"{date_str} {time_str}".strip()
+            for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
+                try:
+                    return datetime.strptime(full_str, fmt).replace(tzinfo=timezone.utc)
+                except Exception:
+                    continue
+
+        # Case 2: Separate legacy formats (M/D/YYYY and H:MM AM/PM)
         if date_str and time_str:
             for date_fmt in ("%m/%d/%Y", "%Y-%m-%d"):
                 try:
-                    date_obj = datetime.strptime(date_str.strip(), date_fmt).date()
+                    date_obj = datetime.strptime(date_str, date_fmt).date()
                     break
                 except Exception:
                     continue
@@ -144,7 +145,7 @@ def parse_trial_datetime(date_str: str, time_str: str) -> Optional[datetime]:
 
             for time_fmt in ("%I:%M %p", "%H:%M", "%H:%M:%S"):
                 try:
-                    time_obj = datetime.strptime(time_str.strip(), time_fmt).time()
+                    time_obj = datetime.strptime(time_str, time_fmt).time()
                     break
                 except Exception:
                     continue
@@ -153,7 +154,7 @@ def parse_trial_datetime(date_str: str, time_str: str) -> Optional[datetime]:
 
             return datetime.combine(date_obj, time_obj).replace(tzinfo=timezone.utc)
 
-        raise ValueError(f"Unrecognized datetime format: '{full_str}'")
+        raise ValueError("No recognizable datetime format")
 
     except Exception as e:
         log.warning(f"Failed to parse trial datetime: '{date_str}' '{time_str}' — {e}")

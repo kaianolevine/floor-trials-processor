@@ -1,9 +1,34 @@
 import time
-from typing import Any, List
+from datetime import datetime, timezone
+from typing import List, Optional
 
 from kaiano_common_utils import logger as log
 
 from floor_trials_processor.state import SpreadsheetState
+
+
+def parse_utc_datetime(value: str) -> Optional[datetime]:
+    """Parse a UTC datetime string, forgiving of ' UTC' or 'Z' suffixes."""
+    if not value:
+        return None
+    value = value.strip()
+
+    # Normalize variants
+    value = value.replace("Z", "").replace("UTC", "").replace("GMT", "").strip()
+
+    for fmt in (
+        "%m/%d/%Y %H:%M:%S",
+        "%m/%d/%Y %H:%M",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+    ):
+        try:
+            return datetime.strptime(value, fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+
+    log.warning(f"Could not parse UTC datetime '{value}'")
+    return None
 
 
 def fetch_sheet_values(
@@ -40,23 +65,34 @@ def get_value(service, spreadsheet_id: str, range_: str) -> str:
 
 
 def write_sheet_value(
-    service, spreadsheet_id: str, cell_range: str, value: Any
-) -> None:
-    """Write a single value or row of values to the specified cell range."""
+    service,
+    spreadsheet_id: str,
+    sheet_range: str,
+    values,
+    value_input_option: str = "RAW",
+):
+    """
+    Write a single value or row of values to a specified range in a Google Sheet.
+    Accepts optional value_input_option ('RAW' or 'USER_ENTERED').
+    """
+    if not isinstance(values, list):
+        values = [[values]]
+    elif values and not isinstance(values[0], list):
+        values = [values]
+
+    body = {"values": values}
     try:
-        if isinstance(value, list):
-            body = {"values": [value]}
-        else:
-            body = {"values": [[value]]}
         service.spreadsheets().values().update(
             spreadsheetId=spreadsheet_id,
-            range=cell_range,
-            valueInputOption="RAW",
+            range=sheet_range,
+            valueInputOption=value_input_option,
             body=body,
         ).execute()
-        log.debug(f"✅ Wrote value(s) to {cell_range}: {value}")
     except Exception as e:
-        log.error(f"❌ Failed to write value to {cell_range}: {e}")
+        log.error(
+            f"write_sheet_value: Failed to write to {sheet_range}: {e}", exc_info=True
+        )
+        raise
 
 
 def names_match(l1: str, f1: str, d1: str, l2: str, f2: str, d2: str) -> bool:
@@ -124,3 +160,57 @@ def audit_queues(state: "SpreadsheetState"):
                 log.warning(
                     f"⚠️ Gap detected in {name} between rows {idx+1} and {idx+2}"
                 )
+
+
+def increment_run_count_in_memory(
+    state: "SpreadsheetState", leader: str, follower: str, division: str
+) -> bool:
+    """
+    Increment the run count for the given (leader, follower, division) in-memory.
+    Matches the specific leader+follower+division triplet from the processed item
+    against each report row; leader and follower are *not* compared to each other.
+    """
+    if "reports" not in state.sections:
+        log.warning("No 'reports' section found in state; cannot increment run count.")
+        return False
+
+    try:
+        report_data = state.sections["reports"]["data"]
+        # Normalize inputs once (names_match handles first-token comparison).
+        leader_n = (leader or "").strip()
+        follower_n = (follower or "").strip()
+        division_n = (division or "").strip()
+
+        for idx, row in enumerate(report_data):
+            r_leader = str(row[0]).strip() if len(row) > 0 else ""
+            r_follower = str(row[1]).strip() if len(row) > 1 else ""
+            r_division = str(row[2]).strip() if len(row) > 2 else ""
+
+            if names_match(
+                r_leader, r_follower, r_division, leader_n, follower_n, division_n
+            ):
+                # Ensure row has at least 5 columns (A..E) where E is run count
+                if len(row) < 5:
+                    row.extend([""] * (5 - len(row)))
+                try:
+                    count = int(str(row[4]).strip()) if str(row[4]).strip() else 0
+                except Exception:
+                    count = 0
+                row[4] = str(count + 1)
+                state.mark_dirty("reports")
+                log.info(
+                    f"--------------------Incremented in-memory run count for {leader_n}/{follower_n}/{division_n} (row {idx+1})"
+                )
+                return True
+
+        log.debug(
+            f"--------------------No matching reports row found for {leader_n}/{follower_n}/{division_n}; run count not incremented."
+        )
+        return False
+
+    except Exception as e:
+        log.error(
+            f"--------------------increment_run_count_in_memory: Error updating run count: {e}",
+            exc_info=True,
+        )
+        return False

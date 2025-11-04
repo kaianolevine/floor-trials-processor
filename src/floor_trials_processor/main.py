@@ -28,9 +28,9 @@ def update_floor_trial_status(service, spreadsheet_id):
     """
     try:
         ranges = [
-            config.FLOOR_OPEN_CELL,
-            config.FLOOR_START_CELL,
-            config.FLOOR_END_CELL,
+            config.FLOOR_OPEN_RANGE,
+            config.FLOOR_START_RANGE,
+            config.FLOOR_END_RANGE,
         ]
         result = (
             service.spreadsheets()
@@ -149,29 +149,11 @@ def run_watcher(
         try:
             in_progress = update_floor_trial_status(service, spreadsheet_id)
 
-            processing.import_external_submissions(
-                service, st, config.EXTERNAL_SOURCE_SHEET_ID
-            )
-
-            action_values = helpers.fetch_sheet_values(
-                service, spreadsheet_id, ACTION_RANGE
-            )
-            processing.process_actions_in_memory(st, action_values)
-
             processing.process_raw_submissions_in_memory(st)
 
-            current_values = helpers.fetch_sheet_values(
-                service, spreadsheet_id, monitor_range
+            processing.import_external_submissions(
+                service, st, config.EXTERNAL_SHEET_ID
             )
-            any_nonempty = any(
-                (row and str(row[0]).strip() != "") for row in current_values
-            )
-            if any_nonempty:
-                log.debug(
-                    "Detected at least one non-empty monitored cell; processing changes."
-                )
-            else:
-                log.debug("No non-empty values in monitored cells this poll iteration.")
 
             if in_progress:
                 processing.fill_current_from_queues(service, spreadsheet_id, st)
@@ -205,6 +187,29 @@ def run_watcher(
                 f"Periodic sync: Writing in-memory state to Sheets (every {config.SYNC_INTERVAL_SECONDS}s, UTC-based)"
             )
             try:
+
+                action_values = helpers.fetch_sheet_values(
+                    service, spreadsheet_id, ACTION_RANGE
+                )
+                any_nonempty = any(
+                    (row and str(row[0]).strip() != "") for row in action_values
+                )
+                if any_nonempty:
+                    log.debug(
+                        "Detected at least one non-empty monitored cell; processing changes."
+                    )
+                else:
+                    log.debug(
+                        "No non-empty values in monitored cells this poll iteration."
+                    )
+                processing.process_actions(
+                    service=service,
+                    spreadsheet_id=spreadsheet_id,
+                    monitor_range=ACTION_RANGE,
+                    current_values=action_values,
+                    state=st,
+                )
+
                 st.sync_to_sheets(service, spreadsheet_id)
                 try:
                     utc_now_str = datetime.now(timezone.utc).strftime(
