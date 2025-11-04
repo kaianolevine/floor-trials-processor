@@ -1,0 +1,57 @@
+# === CONFIGURATION CONSTANTS ===
+SHEET_ID = "1JsWQDnxHis79dHcdlZZlgO1HS5Ldlq8zvLD1FdEwBQ4"
+
+CURRENT_SHEET = "Current"
+PRIORITY_SHEET = "Priority"
+NON_PRIORITY_SHEET = "NonPriority"
+REPORTS_SHEET = "Reports"
+REJECTED_SHEET = "RejectedSubmissions"
+EXTERNAL_SHEET_ID = "193QJBSQKkW1-c2Z3WHv3o2rbX-zZwn9fnmEACj88cEw"
+
+# Ranges
+CURRENT_QUEUE_RANGE = "Current!E6:I12"
+PRIORITY_QUEUE_RANGE = "Priority!B3:F"
+NON_PRIORITY_QUEUE_RANGE = "NonPriority!B3:F"
+REPORTS_RANGE = "Reports!A4:E"
+REJECTED_RANGE = "RejectedSubmissions!B4:H"
+
+# Time-related ranges
+FLOOR_OPEN_RANGE = "Current!B15"
+FLOOR_START_RANGE = "Current!B16"
+FLOOR_END_RANGE = "Current!B17"
+FLOOR_STATUS_RANGE = "Current!BCD19"
+CURRENT_UTC_CELL = "Current!D2"
+
+MAX_RAW_BATCH_SIZE = 20
+MAX_RUN_COUNT_FOR_PRIORITY = 3
+SYNC_INTERVAL_SECONDS = 60
+
+# === New runtime and start delay constants ===
+MAX_RUNTIME_HOURS = 5
+MAX_START_DELAY_HOURS = 1.5
+
+# Status text
+STATUS_NOT_ACTIVE = "Floor Trials Not Active"
+STATUS_IN_PROGRESS = "Floor Trials In Progress"
+STATUS_OPEN = "Floor Trials Open for Submissions"
+STATUS_CLOSED = "Floor Trials Closed"
+
+# Additional sheet/range constants (for backward compatibility)
+SHEET_RANGE = f"{CURRENT_SHEET}!A:Z"
+INTERVAL_SECONDS = 10
+DURATION_MINUTES = 60
+MONITOR_RANGE = f"{CURRENT_SHEET}!C6:C11"
+HISTORY_SHEET_NAME = "History"
+RAW_SUBMISSIONS_RANGE = "RawSubmissions!C4:F"
+REPORT_RANGE = "Report!A4:E"
+COMPACTION_RANGE = "Current!E6:J12"
+FLOOR_TRIAL_STATUS_RANGE = "Current!B19:D19"
+FLOOR_TRIAL_DATE_CELL = "Current!D15"
+FLOOR_TRIAL_START_CELL = "Current!C17"
+FLOOR_TRIAL_END_CELL = "Current!D17"
+AUTOMATION_CONTROL_CELL = "Current!H2"
+PRIORITY_DIVISION_RANGE = "Current!F16:F30"
+PRIORITY_FLAG_RANGE = "Current!G16:G30"
+REJECTED_SUBMISSIONS_RANGE = "RejectedSubmissions!B:H"
+EXTERNAL_SOURCE_RANGE = "Form Responses 1!A2:H"
+DEBUG_UTC_MODE = True  # Set to False to disable verbose UTC verification
