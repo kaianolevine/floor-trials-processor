@@ -9,8 +9,8 @@ from kaiano_common_utils import logger as log
 import floor_trials_processor.config as config
 import floor_trials_processor.helpers as helpers
 import floor_trials_processor.state as state
-import floor_trials_processor.state.SpreadsheetState as SpreadsheetState
 from floor_trials_processor.helpers import names_match
+from floor_trials_processor.state import SpreadsheetState
 
 
 def normalize_row_length(row: List[str], length: int = 5) -> List[str]:
