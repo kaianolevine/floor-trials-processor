@@ -2,9 +2,13 @@ name: Floor Trials Watcher
 
 on:
   workflow_dispatch:
-  #schedule:
-    # Optional: run every hour (adjust as needed)
-    #- cron: "0 * * * *"
+  schedule:
+    # Run every hour at minute 45
+    - cron: "45 * * * *"
+
+concurrency:
+  group: floor-trials-watcher
+  cancel-in-progress: false
 
 jobs:
   run:
@@ -34,7 +38,6 @@ jobs:
       - name: 🧰 Install dependencies
         run: |
           poetry install
-          # Or if kaiano-common-utils isn't in pyproject.toml, install directly:
           poetry add git+https://github.com/kaianolevine/kaiano-common-utils.git
 
       - name: 🏃 Run floor-trials processor

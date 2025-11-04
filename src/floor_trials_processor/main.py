@@ -6,6 +6,7 @@ This script will run for a configurable time, poll a configurable sheet range at
 and when values change in the watched sheet it will trigger processing (moving rows etc.).
 """
 
+
 import copy
 import re
 import time
@@ -15,66 +16,95 @@ from typing import Any, List, Optional
 from kaiano_common_utils import google_sheets as sheets
 from kaiano_common_utils import logger as log
 
-TARGET_SHEET_NAME = "Processed"  # Placeholder for future configuration
-
-
-# ---------------------------------------------------------------------
-# CONFIGURATION CONSTANTS
-# ---------------------------------------------------------------------
-# Google Sheet ID for the Floor Trials Processor
+# === CONFIGURATION CONSTANTS ===
 SHEET_ID = "1JsWQDnxHis79dHcdlZZlgO1HS5Ldlq8zvLD1FdEwBQ4"
-# Main range to monitor in the Current sheet (all columns)
-SHEET_RANGE = "Current!A:Z"
-# Polling interval in seconds for the watcher
-INTERVAL_SECONDS = 10
-# Periodic sync interval in seconds for writing memory to Sheets
-SYNC_INTERVAL_SECONDS = 10
-# Total duration to run the watcher in minutes
-DURATION_MINUTES = 60
-# Range of monitored cells (actions) in the Current sheet
-MONITOR_RANGE = "Current!C6:C11"
-# Sheet name for the History log
-HISTORY_SHEET_NAME = "History"
-# Sheet name for the Priority queue
-PRIORITY_SHEET_NAME = "Priority"
-# Sheet name for the NonPriority queue
-NON_PRIORITY_SHEET_NAME = "NonPriority"
-# Range for raw submissions to process
-RAW_SUBMISSIONS_RANGE = "RawSubmissions!C4:F"
-# Report sheet configuration
-REPORT_SHEET_NAME = "Report"
-REPORT_RANGE = "Report!A4:E"
-# Range for the current queue in the Current sheet
-CURRENT_QUEUE_RANGE = "Current!E6:I11"
-# Range for compaction in the Current sheet
-COMPACTION_RANGE = "Current!E6:J12"
-# Range for Floor Trial status display
-FLOOR_TRIAL_STATUS_RANGE = "Current!B19:D19"
-# Cell for Floor Trial date
-FLOOR_TRIAL_DATE_CELL = "Current!D15"
-# Cell for Floor Trial start time (now C17, not B17)
-FLOOR_TRIAL_START_CELL = "Current!C17"
-# Cell for Floor Trial end time
-FLOOR_TRIAL_END_CELL = "Current!D17"
-# Cell controlling automation run/stop
-AUTOMATION_CONTROL_CELL = "Current!H2"
-# Range for Priority division list
-PRIORITY_DIVISION_RANGE = "Current!F16:F30"
-# Range for Priority flag (X) list
-PRIORITY_FLAG_RANGE = "Current!G16:G30"
-# Range for Priority queue
+
+CURRENT_SHEET = "Current"
+PRIORITY_SHEET = "Priority"
+NON_PRIORITY_SHEET = "NonPriority"
+REPORTS_SHEET = "Reports"
+REJECTED_SHEET = "RejectedSubmissions"
+EXTERNAL_SHEET_ID = "193QJBSQKkW1-c2Z3WHv3o2rbX-zZwn9fnmEACj88cEw"
+
+# Ranges
+CURRENT_QUEUE_RANGE = "Current!E6:I12"
 PRIORITY_QUEUE_RANGE = "Priority!B3:F"
-# Range for NonPriority queue
 NON_PRIORITY_QUEUE_RANGE = "NonPriority!B3:F"
-# Range for rejected submissions
+REPORTS_RANGE = "Reports!A4:E"
+REJECTED_RANGE = "RejectedSubmissions!B4:H"
+
+# Time-related ranges
+FLOOR_OPEN_RANGE = "Current!B15"
+FLOOR_START_RANGE = "Current!B16"
+FLOOR_END_RANGE = "Current!B17"
+FLOOR_STATUS_RANGE = "Current!BCD19"
+CURRENT_UTC_CELL = "Current!D2"
+
+MAX_RAW_BATCH_SIZE = 20
+MAX_RUN_COUNT_FOR_PRIORITY = 3
+SYNC_INTERVAL_SECONDS = 60
+
+# === New runtime and start delay constants ===
+MAX_RUNTIME_HOURS = 5
+MAX_START_DELAY_HOURS = 1.5
+def get_value(service, spreadsheet_id, range_):
+    try:
+        rows = fetch_sheet_values(service, spreadsheet_id, range_)
+        return rows[0][0] if rows and rows[0] else ""
+    except Exception as e:
+        log.warning(f"Error getting value from {range_}: {e}")
+        return ""
+
+
+# ---------------------------------------------------------------------
+# Helper: Check if next floor trial is within MAX_START_DELAY_HOURS
+# ---------------------------------------------------------------------
+def should_start_run(service, spreadsheet_id):
+    """Return False if the next floor trial starts more than 1.5 hours away."""
+    from datetime import timedelta, datetime, timezone
+    start_str = get_value(service, spreadsheet_id, FLOOR_START_RANGE)
+    dt_start = None
+    if start_str:
+        for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
+            try:
+                dt_start = datetime.strptime(start_str.strip(), fmt).replace(tzinfo=timezone.utc)
+                break
+            except Exception:
+                continue
+    if not dt_start:
+        log.warning("No valid floor trial start time — exiting gracefully.")
+        return False
+
+    now_utc = datetime.now(timezone.utc)
+    if dt_start > now_utc + timedelta(hours=MAX_START_DELAY_HOURS):
+        log.info(f"Floor trial starts at {dt_start} (more than {MAX_START_DELAY_HOURS} hours away) — exiting early.")
+        return False
+    return True
+
+# Status text
+STATUS_NOT_ACTIVE = "Floor Trials Not Active"
+STATUS_IN_PROGRESS = "Floor Trials In Progress"
+STATUS_OPEN = "Floor Trials Open for Submissions"
+STATUS_CLOSED = "Floor Trials Closed"
+
+# Additional sheet/range constants (for backward compatibility)
+SHEET_RANGE = f"{CURRENT_SHEET}!A:Z"
+INTERVAL_SECONDS = 10
+DURATION_MINUTES = 60
+MONITOR_RANGE = f"{CURRENT_SHEET}!C6:C11"
+HISTORY_SHEET_NAME = "History"
+RAW_SUBMISSIONS_RANGE = "RawSubmissions!C4:F"
+REPORT_RANGE = "Report!A4:E"
+COMPACTION_RANGE = "Current!E6:J12"
+FLOOR_TRIAL_STATUS_RANGE = "Current!B19:D19"
+FLOOR_TRIAL_DATE_CELL = "Current!D15"
+FLOOR_TRIAL_START_CELL = "Current!C17"
+FLOOR_TRIAL_END_CELL = "Current!D17"
+AUTOMATION_CONTROL_CELL = "Current!H2"
+PRIORITY_DIVISION_RANGE = "Current!F16:F30"
+PRIORITY_FLAG_RANGE = "Current!G16:G30"
 REJECTED_SUBMISSIONS_RANGE = "RejectedSubmissions!B:H"
-
-# External source spreadsheet for importing new submissions
-EXTERNAL_SOURCE_SHEET_ID = "193QJBSQKkW1-c2Z3WHv3o2rbX-zZwn9fnmEACj88cEw"
 EXTERNAL_SOURCE_RANGE = "Form Responses 1!A2:H"
-
-
-# Debug / configuration flags
 DEBUG_UTC_MODE = True  # Set to False to disable verbose UTC verification
 
 
@@ -95,11 +125,11 @@ def load_state_from_sheets(service, spreadsheet_id):
 
     log.info("Loading spreadsheet state from Google Sheets...")
 
-    current = get_values("Current!E6:I12", 5)
-    priority = get_values("Priority!B3:F", 5)
-    nonpriority = get_values("NonPriority!B3:F", 5)
-    report = get_values("Reports!A4:E", 5)
-    rejected = get_values("RejectedSubmissions!B4:H", 7)
+    current = get_values(CURRENT_QUEUE_RANGE, 5)
+    priority = get_values(PRIORITY_QUEUE_RANGE, 5)
+    nonpriority = get_values(NON_PRIORITY_QUEUE_RANGE, 5)
+    report = get_values(REPORTS_RANGE, 5)
+    rejected = get_values(REJECTED_RANGE, 7)
 
     log.info(
         f"Loaded state: {len(current)} current, {len(priority)} priority, "
@@ -186,7 +216,7 @@ def audit_queues(state: "SpreadsheetState"):
 def verify_utc_timing(service, sheet_id):
     """Log UTC-based timing diagnostics for the Floor Trial schedule."""
     try:
-        ranges = ["Current!D15", "Current!C17", "Current!D17"]
+        ranges = [FLOOR_TRIAL_DATE_CELL, FLOOR_TRIAL_START_CELL, FLOOR_TRIAL_END_CELL]
         result = (
             service.spreadsheets()
             .values()
@@ -360,7 +390,7 @@ def process_actions_in_memory(
     service = sheets.get_sheets_service()
     service.spreadsheets().values().update(
         spreadsheetId=SHEET_ID,
-        range="Current!C6:C11",
+        range=MONITOR_RANGE,
         valueInputOption="RAW",
         body={"values": action_values},
     ).execute()
@@ -1221,7 +1251,7 @@ def process_raw_submissions_in_memory(state: SpreadsheetState):
 
     service = sheets.get_sheets_service()
 
-    # --- Retrieve Floor Trial date and times from Current sheet ---
+    # --- Retrieve new UTC Floor Trial times from Current sheet ---
     def get_value(service, spreadsheet_id, range_):
         try:
             rows = fetch_sheet_values(service, spreadsheet_id, range_)
@@ -1230,12 +1260,23 @@ def process_raw_submissions_in_memory(state: SpreadsheetState):
             log.warning(f"Error getting value from {range_}: {e}")
             return ""
 
-    trial_date = get_value(service, SHEET_ID, "Current!D15")
-    open_time = get_value(service, SHEET_ID, "Current!B17")
-    end_time = get_value(service, SHEET_ID, "Current!D17")
+    open_time = get_value(service, SHEET_ID, "Current!B15")
+    start_time = get_value(service, SHEET_ID, "Current!B16")
+    end_time = get_value(service, SHEET_ID, "Current!B17")
 
-    trial_open = parse_trial_datetime(trial_date, open_time)
-    trial_end = parse_trial_datetime(trial_date, end_time)
+    def parse_utc_string(s):
+        if not s:
+            return None
+        for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
+            try:
+                return datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
+            except Exception:
+                continue
+        return None
+
+    trial_open = parse_utc_string(open_time)
+    trial_start = parse_utc_string(start_time)
+    trial_end = parse_utc_string(end_time)
 
     raw_data = state.sections["raw_submissions"]["data"]
     # Build priority_names and all_known_divs from the row-by-row mapping of division and flag
@@ -1272,7 +1313,7 @@ def process_raw_submissions_in_memory(state: SpreadsheetState):
         try:
             submission_time = datetime.strptime(
                 str(timestamp).strip(), "%m/%d/%Y %H:%M:%S"
-            )
+            ).replace(tzinfo=timezone.utc)
         except Exception as e:
             log.warning(f"Could not parse submission time '{timestamp}': {e}")
             continue
@@ -1570,7 +1611,7 @@ def run_watcher(
     )
     iteration = 0
     last_sync_time = time.time()
-    ACTION_RANGE = "Current!C6:C11"
+    ACTION_RANGE = MONITOR_RANGE
     while datetime.now(timezone.utc) < utc_end_time:
         iteration += 1
         log.debug(f"Poll iteration {iteration} start (UTC)")
@@ -1616,11 +1657,11 @@ def run_watcher(
             )
             service.spreadsheets().values().update(
                 spreadsheetId=spreadsheet_id,
-                range="Current!D2",
+                range=CURRENT_UTC_CELL,
                 valueInputOption="RAW",
                 body={"values": [[utc_now_str_iter]]},
             ).execute()
-            log.debug(f"Heartbeat -> Current!D2 set to {utc_now_str_iter}")
+            log.debug(f"Heartbeat -> {CURRENT_UTC_CELL} set to {utc_now_str_iter}")
         except Exception as e:
             log.error(f"Failed to update Current!D2 heartbeat: {e}", exc_info=True)
         # Periodic in-memory sync to Sheets every SYNC_INTERVAL_SECONDS
@@ -1638,14 +1679,14 @@ def run_watcher(
                     )
                     service.spreadsheets().values().update(
                         spreadsheetId=spreadsheet_id,
-                        range="Current!D2",
+                        range=CURRENT_UTC_CELL,
                         valueInputOption="RAW",
                         body={"values": [[utc_now_str]]},
                     ).execute()
-                    log.info(f"Updated Current!D2 with UTC timestamp {utc_now_str}")
+                    log.info(f"Updated {CURRENT_UTC_CELL} with UTC timestamp {utc_now_str}")
                 except Exception as e:
                     log.error(
-                        f"Failed to update Current!D2 timestamp: {e}", exc_info=True
+                        f"Failed to update {CURRENT_UTC_CELL} timestamp: {e}", exc_info=True
                     )
                 last_sync_time = now
             except Exception as e:
@@ -1663,13 +1704,13 @@ def run_watcher(
         utc_now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         service.spreadsheets().values().update(
             spreadsheetId=spreadsheet_id,
-            range="Current!D2",
+            range=CURRENT_UTC_CELL,
             valueInputOption="RAW",
             body={"values": [[utc_now_str]]},
         ).execute()
-        log.info(f"Updated Current!D2 with UTC timestamp {utc_now_str}")
+        log.info(f"Updated {CURRENT_UTC_CELL} with UTC timestamp {utc_now_str}")
     except Exception as e:
-        log.error(f"Failed to update Current!D2 timestamp: {e}", exc_info=True)
+        log.error(f"Failed to update {CURRENT_UTC_CELL} timestamp: {e}", exc_info=True)
     log.info("Watcher finished — runtime limit reached (UTC).")
 
 
@@ -1682,12 +1723,161 @@ def main():
     # UTC verification diagnostics (if enabled)
     if DEBUG_UTC_MODE:
         verify_utc_timing(service, SHEET_ID)
+    # Check if we should start this run (based on next floor trial start time)
+    if not should_start_run(service, SHEET_ID):
+        log.info("No active or near-future floor trial — stopping run.")
+        return
     # Load state from sheets at startup
     load_state_from_sheets(service, SHEET_ID)
-    run_watcher(
-        SHEET_ID, SHEET_RANGE, INTERVAL_SECONDS, DURATION_MINUTES, MONITOR_RANGE
+    # Start time for max runtime check
+    start_time = datetime.now(timezone.utc)
+    # Main watcher loop with runtime check
+    # Instead of calling run_watcher directly, inline the runtime check logic
+    # (For legacy compatibility, but you can also add runtime check inside run_watcher if desired)
+    # We'll call run_watcher, but patch it here for runtime check in the watcher loop.
+    # So, instead, add a runtime check inside run_watcher below.
+    run_watcher_with_runtime(
+        SHEET_ID, SHEET_RANGE, INTERVAL_SECONDS, DURATION_MINUTES, MONITOR_RANGE, start_time
     )
     log.info("Main function complete")
+
+
+# --- Wrap run_watcher to add runtime check ---
+def run_watcher_with_runtime(
+    spreadsheet_id: str,
+    sheet_range: str,
+    interval_seconds: int,
+    duration_minutes: int,
+    monitor_range: str,
+    start_time,
+):
+    """
+    Wraps run_watcher and adds a runtime limit check (MAX_RUNTIME_HOURS).
+    """
+    log.info("Starting run_watcher with runtime limit")
+    service = sheets.get_sheets_service()
+
+    if not isRunning(service, spreadsheet_id):
+        return
+
+    # Initialize SpreadsheetState and load from Sheets
+    state = SpreadsheetState()
+    state.load_from_sheets(service, spreadsheet_id)
+    state.visualize()
+
+    utc_end_time = datetime.now(timezone.utc) + timedelta(minutes=duration_minutes)
+    log.info(
+        f"Watcher starting: spreadsheet_id={spreadsheet_id}, range={sheet_range}, "
+        f"interval={interval_seconds}s, duration={duration_minutes}min (UTC), monitor_range={monitor_range}"
+    )
+    iteration = 0
+    last_sync_time = time.time()
+    ACTION_RANGE = MONITOR_RANGE
+    while datetime.now(timezone.utc) < utc_end_time:
+        iteration += 1
+        log.debug(f"Poll iteration {iteration} start (UTC)")
+        poll_start = time.time()
+        try:
+            # Update Floor Trial status before processing submissions/actions
+            in_progress = update_floor_trial_status(service, spreadsheet_id)
+            # Import external submissions before processing raw submissions
+            import_external_submissions(service, state, EXTERNAL_SOURCE_SHEET_ID)
+            # --- Process actions in memory before raw submissions ---
+            action_values = fetch_sheet_values(service, spreadsheet_id, ACTION_RANGE)
+            process_actions_in_memory(state, action_values)
+            # --- End new logic ---
+            process_raw_submissions_in_memory(state)
+            current_values = fetch_sheet_values(service, spreadsheet_id, monitor_range)
+            # Instead of change detection, process if any monitored cell is non-empty
+            any_nonempty = any(
+                (row and str(row[0]).strip() != "") for row in current_values
+            )
+            if any_nonempty:
+                log.debug(
+                    "Detected at least one non-empty monitored cell; processing changes."
+                )
+                # Optionally: process_actions(service, spreadsheet_id, monitor_range, current_values)
+            else:
+                log.debug("No non-empty values in monitored cells this poll iteration.")
+            # Fill empty rows in Current!E6:I11 from queues after processing actions
+            if in_progress:
+                fill_current_from_queues(service, spreadsheet_id, state)
+            else:
+                log.info(
+                    "⏸️ Floor Trial not in progress — skipping current queue population"
+                )
+        except Exception as e:
+            log.error(f"Error during polling: {e}", exc_info=True)
+        elapsed = time.time() - poll_start
+        sleep_time = max(0, interval_seconds - elapsed)
+        state.visualize()
+        # Heartbeat: write current UTC time to Current!D2 every loop for accuracy
+        try:
+            utc_now_str_iter = datetime.now(timezone.utc).strftime(
+                "%Y-%m-%d %H:%M:%S UTC"
+            )
+            service.spreadsheets().values().update(
+                spreadsheetId=spreadsheet_id,
+                range=CURRENT_UTC_CELL,
+                valueInputOption="RAW",
+                body={"values": [[utc_now_str_iter]]},
+            ).execute()
+            log.debug(f"Heartbeat -> {CURRENT_UTC_CELL} set to {utc_now_str_iter}")
+        except Exception as e:
+            log.error(f"Failed to update Current!D2 heartbeat: {e}", exc_info=True)
+        # Periodic in-memory sync to Sheets every SYNC_INTERVAL_SECONDS
+        now = time.time()
+        if now - last_sync_time >= SYNC_INTERVAL_SECONDS:
+            log.info(
+                f"Periodic sync: Writing in-memory state to Sheets (every {SYNC_INTERVAL_SECONDS}s, UTC-based)"
+            )
+            try:
+                state.sync_to_sheets(service, spreadsheet_id)
+                # --- Update Current!D2 with UTC timestamp after spreadsheet sync ---
+                try:
+                    utc_now_str = datetime.now(timezone.utc).strftime(
+                        "%Y-%m-%d %H:%M:%S UTC"
+                    )
+                    service.spreadsheets().values().update(
+                        spreadsheetId=spreadsheet_id,
+                        range=CURRENT_UTC_CELL,
+                        valueInputOption="RAW",
+                        body={"values": [[utc_now_str]]},
+                    ).execute()
+                    log.info(f"Updated {CURRENT_UTC_CELL} with UTC timestamp {utc_now_str}")
+                except Exception as e:
+                    log.error(
+                        f"Failed to update {CURRENT_UTC_CELL} timestamp: {e}", exc_info=True
+                    )
+                last_sync_time = now
+            except Exception as e:
+                log.error(f"Periodic sync failed: {e}", exc_info=True)
+        # --- Runtime check ---
+        elapsed_hours = (datetime.now(timezone.utc) - start_time).total_seconds() / 3600
+        if elapsed_hours >= MAX_RUNTIME_HOURS:
+            log.info(f"Reached max runtime of {MAX_RUNTIME_HOURS} hours — exiting gracefully.")
+            break
+        log.debug(
+            f"Poll iteration {iteration} took {format_duration(elapsed)}; sleeping for {format_duration(sleep_time)} (UTC) …"
+        )
+        time.sleep(sleep_time)
+        log.debug(f"Poll iteration {iteration} end (UTC)")
+
+    # Final sync in-memory state to Sheets before finishing
+    state.sync_to_sheets(service, spreadsheet_id)
+    # --- Update Current!D2 with UTC timestamp after final spreadsheet sync ---
+    try:
+        utc_now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=CURRENT_UTC_CELL,
+            valueInputOption="RAW",
+            body={"values": [[utc_now_str]]},
+        ).execute()
+        log.info(f"Updated {CURRENT_UTC_CELL} with UTC timestamp {utc_now_str}")
+    except Exception as e:
+        log.error(f"Failed to update {CURRENT_UTC_CELL} timestamp: {e}", exc_info=True)
+    log.info("Watcher finished — runtime limit reached (UTC).")
 
 
 if __name__ == "__main__":
