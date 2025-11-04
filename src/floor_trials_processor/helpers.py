@@ -4,6 +4,7 @@ from typing import List, Optional
 
 from kaiano_common_utils import logger as log
 
+from floor_trials_processor import config
 from floor_trials_processor.state import SpreadsheetState
 
 
@@ -213,4 +214,65 @@ def increment_run_count_in_memory(
             f"--------------------increment_run_count_in_memory: Error updating run count: {e}",
             exc_info=True,
         )
+        return False
+
+
+def update_floor_trial_status(service, spreadsheet_id):
+    """
+    Update Floor Trial status using UTC datetimes in config-defined cells.
+    """
+    try:
+        ranges = [
+            config.FLOOR_OPEN_RANGE,
+            config.FLOOR_START_RANGE,
+            config.FLOOR_END_RANGE,
+        ]
+        result = (
+            service.spreadsheets()
+            .values()
+            .batchGet(spreadsheetId=spreadsheet_id, ranges=ranges)
+            .execute()
+        )
+        open_val = result.get("valueRanges", [])[0].get("values", [])
+        start_val = result.get("valueRanges", [])[1].get("values", [])
+        end_val = result.get("valueRanges", [])[2].get("values", [])
+        open_str = open_val[0][0].strip() if open_val and open_val[0] else ""
+        start_str = start_val[0][0].strip() if start_val and start_val[0] else ""
+        end_str = end_val[0][0].strip() if end_val and end_val[0] else ""
+
+        dt_open = parse_utc_datetime(open_str)
+        dt_start = parse_utc_datetime(start_str)
+        dt_end = parse_utc_datetime(end_str)
+        now_utc = datetime.now(timezone.utc)
+
+        log.info(
+            f"update_floor_trial_status: Open={dt_open}, Start={dt_start}, End={dt_end}, Now={now_utc}"
+        )
+
+        status = config.STATUS_NOT_ACTIVE
+        if dt_start and dt_end:
+            if dt_start <= now_utc <= dt_end:
+                status = config.STATUS_IN_PROGRESS
+            elif now_utc < dt_start:
+                status = config.STATUS_OPEN
+            elif now_utc > dt_end:
+                status = config.STATUS_CLOSED
+
+        # helpers.write_sheet_value must support writing a row; if not, keep original update with config.FLOOR_STATUS_RANGE
+        try:
+            write_sheet_value(
+                service, spreadsheet_id, config.FLOOR_STATUS_RANGE, [status, "", ""]
+            )
+        except Exception:
+            # fallback to direct update if helpers.write_sheet_value fails
+            service.spreadsheets().values().update(
+                spreadsheetId=spreadsheet_id,
+                range=config.FLOOR_STATUS_RANGE,
+                valueInputOption="RAW",
+                body={"values": [[status, "", ""]]},
+            ).execute()
+        log.info(f"update_floor_trial_status: Updated status to '{status}'")
+        return config.STATUS_IN_PROGRESS in status
+    except Exception as e:
+        log.error(f"update_floor_trial_status: Exception occurred: {e}", exc_info=True)
         return False
