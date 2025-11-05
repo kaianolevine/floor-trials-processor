@@ -11,7 +11,11 @@ import floor_trials_processor.helpers as helpers
 # Helper: Check if next floor trial is within MAX_START_DELAY_HOURS
 # ---------------------------------------------------------------------
 def should_start_run(service, spreadsheet_id) -> bool:
-    """Return False if the next floor trial starts more than 1.5 hours away."""
+    """
+    Determine if the next floor trial start time is within the allowed delay window.
+
+    Returns False if the start time is more than MAX_START_DELAY_HOURS away.
+    """
     start_str = helpers.get_single_cell(
         service, spreadsheet_id, config.FLOOR_START_RANGE
     )
@@ -26,20 +30,26 @@ def should_start_run(service, spreadsheet_id) -> bool:
             except Exception:
                 continue
     if not dt_start:
-        log.warning("No valid floor trial start time — exiting gracefully.")
+        log.warning(
+            "⚠️ WARNING: No valid floor trial start time found — exiting gracefully."
+        )
         return False
 
     now_utc = datetime.now(timezone.utc)
     if dt_start > now_utc + timedelta(hours=config.MAX_START_DELAY_HOURS):
         log.info(
-            f"Floor trial starts at {dt_start} (more than {config.MAX_START_DELAY_HOURS} hours away) — exiting early."
+            f"✅ INFO: Floor trial starts at {dt_start} (more than {config.MAX_START_DELAY_HOURS} hours away) — exiting early."
         )
         return False
     return True
 
 
-def verify_utc_timing(service, sheet_id) -> None:
-    """Log UTC-based timing diagnostics for the Floor Trial schedule."""
+def verify_utc_timing(service, sheet_id) -> Optional[dict]:
+    """
+    Log UTC-based diagnostics for the Floor Trial schedule and update status.
+
+    Returns a dictionary with timing details and status, or None on error.
+    """
     try:
         ranges = [
             config.FLOOR_TRIAL_DATE_CELL,
@@ -60,39 +70,41 @@ def verify_utc_timing(service, sheet_id) -> None:
         dt_end = parse_trial_datetime(date_val, end_val)
         now_utc = datetime.now(timezone.utc)
 
-        log.info("=== UTC Verification — Floor Trial Timing ===")
-        log.info(f"Trial Date (D15): {date_val}")
-        log.info(f"Start Time (C17): {start_val}")
-        log.info(f"End Time (D17):   {end_val}")
+        log.info("✅ INFO: === UTC Verification — Floor Trial Timing ===")
+        log.info(f"✅ INFO: Trial Date (D15): {date_val}")
+        log.info(f"✅ INFO: Start Time (C17): {start_val}")
+        log.info(f"✅ INFO: End Time (D17):   {end_val}")
 
         if dt_start is None:
-            log.warning(f"⚠️ Invalid start time: '{start_val}'")
+            log.warning(f"⚠️ WARNING: Invalid start time: '{start_val}'")
         else:
-            log.info(f"Parsed UTC Start: {dt_start}")
+            log.info(f"✅ INFO: Parsed UTC Start: {dt_start}")
 
         if dt_end is None:
-            log.warning(f"⚠️ Invalid end time: '{end_val}'")
+            log.warning(f"⚠️ WARNING: Invalid end time: '{end_val}'")
         else:
-            log.info(f"Parsed UTC End:   {dt_end}")
+            log.info(f"✅ INFO: Parsed UTC End:   {dt_end}")
 
-        log.info(f"Current UTC Now:  {now_utc}")
+        log.info(f"✅ INFO: Current UTC Now:  {now_utc}")
 
         status = "unknown"
         if dt_start and dt_end:
             if dt_start <= now_utc <= dt_end:
-                log.info("✅ Floor Trial is IN PROGRESS (UTC)")
+                log.info("✅ INFO: Floor Trial is IN PROGRESS (UTC)")
                 status = "in_progress"
             elif now_utc < dt_start:
-                log.info("⏳ Floor Trial has NOT STARTED yet (UTC)")
+                log.info("⏳ INFO: Floor Trial has NOT STARTED yet (UTC)")
                 status = "not_started"
             else:
-                log.info("🏁 Floor Trial is FINISHED (UTC)")
+                log.info("🏁 INFO: Floor Trial is FINISHED (UTC)")
                 status = "finished"
         else:
-            log.warning("⚠️ Could not parse trial date/time — check sheet values")
+            log.warning(
+                "⚠️ WARNING: Could not parse trial date/time — check sheet values"
+            )
 
         helpers.update_floor_trial_status(service, sheet_id)
-        log.info("✅ UTC Verification complete — proceeding to queue processing")
+        log.info("✅ INFO: UTC Verification complete — proceeding to queue processing")
 
         return {
             "date": date_val,
@@ -102,7 +114,7 @@ def verify_utc_timing(service, sheet_id) -> None:
             "status": status,
         }
     except Exception as e:
-        log.error(f"Error verifying UTC timing: {e}")
+        log.error(f"❌ ERROR: Error verifying UTC timing: {e}")
         return None
 
 
@@ -110,12 +122,17 @@ def verify_utc_timing(service, sheet_id) -> None:
 # Helper: Parse trial date and time into datetime
 # ---------------------------------------------------------------------
 def parse_trial_datetime(date_str: str, time_str: str) -> Optional[datetime]:
-    """Parse combined or standalone UTC datetime strings into a timezone-aware datetime."""
+    """
+    Parse date and time strings into a timezone-aware UTC datetime.
+
+    Supports various formats including combined and separate legacy formats.
+    Returns None if parsing fails.
+    """
     try:
         date_str = (date_str or "").strip()
         time_str = (time_str or "").strip()
 
-        # Case 0: If one field already looks like a full UTC datetime, parse it directly
+        # Attempt to parse full datetime strings directly from either input
         for val in (date_str, time_str):
             for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
                 try:
@@ -123,7 +140,7 @@ def parse_trial_datetime(date_str: str, time_str: str) -> Optional[datetime]:
                 except Exception:
                     continue
 
-        # Case 1: Combined string (legacy fallback)
+        # Attempt combined datetime string parsing
         if date_str and time_str:
             full_str = f"{date_str} {time_str}".strip()
             for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
@@ -132,7 +149,7 @@ def parse_trial_datetime(date_str: str, time_str: str) -> Optional[datetime]:
                 except Exception:
                     continue
 
-        # Case 2: Separate legacy formats (M/D/YYYY and H:MM AM/PM)
+        # Parse separate legacy date and time formats
         if date_str and time_str:
             for date_fmt in ("%m/%d/%Y", "%Y-%m-%d"):
                 try:
@@ -157,5 +174,7 @@ def parse_trial_datetime(date_str: str, time_str: str) -> Optional[datetime]:
         raise ValueError("No recognizable datetime format")
 
     except Exception as e:
-        log.warning(f"Failed to parse trial datetime: '{date_str}' '{time_str}' — {e}")
+        log.warning(
+            f"⚠️ WARNING: Failed to parse trial datetime: '{date_str}' '{time_str}' — {e}"
+        )
         return None

@@ -12,13 +12,13 @@ import floor_trials_processor.helpers as helpers
 # ---------------------------------------------------------------------
 class SpreadsheetState:
     """
-    Manages in-memory data storage for all relevant sheet sections.
-    Provides methods to load all data from Google Sheets, mark dirty sections,
-    sync back, and visualize the current state.
+    Manage in-memory data storage for all relevant sheet sections.
+    Provides methods to load data from Google Sheets, mark dirty sections,
+    sync updates back, and visualize the current state.
     """
 
     def __init__(self):
-        # Store all section data here
+        # Initialize storage for all sections with their ranges and column counts
         self.sections = {
             "current_queue": {
                 "range": config.CURRENT_QUEUE_RANGE,
@@ -66,13 +66,16 @@ class SpreadsheetState:
                 "cols": 5,
             },
         }
-        # Set of section names with unsynced changes
+        # Track sections with unsynced changes
         self.dirty_sections = set()
 
     def load_from_sheets(self, service: Any, spreadsheet_id: str) -> None:
         """
-        Fetches all configured section data in a single batchGet where possible,
-        and stores it in memory.
+        Load all configured section data from Google Sheets in a batch request.
+
+        Args:
+            service: Google Sheets API service instance.
+            spreadsheet_id: ID of the spreadsheet to load from.
         """
         ranges = [self.sections[name]["range"] for name in self.sections]
         try:
@@ -90,22 +93,27 @@ class SpreadsheetState:
                     else []
                 )
                 self.sections[name]["data"] = vals
-            log.info("SpreadsheetState: Loaded all sections from sheets.")
+            log.info(
+                "✅ INFO: SpreadsheetState loaded all sections from sheets successfully."
+            )
         except Exception as e:
             log.error(
-                f"SpreadsheetState: Error loading from sheets: {e}", exc_info=True
+                f"❌ ERROR: SpreadsheetState failed to load from sheets: {e}",
+                exc_info=True,
             )
 
     def sync_to_sheets(self, service: Any, spreadsheet_id: str) -> None:
         """
-        Pushes updates for all dirty sections to Google Sheets.
+        Sync all dirty sections' data back to Google Sheets.
+
+        Args:
+            service: Google Sheets API service instance.
+            spreadsheet_id: ID of the spreadsheet to update.
         """
         for name in list(self.dirty_sections):
             section = self.sections.get(name)
             if not section:
-                log.warning(
-                    f"SpreadsheetState: Unknown section '{name}' - cannot sync."
-                )
+                log.warning(f"⚠️ WARNING: Unknown section '{name}' cannot be synced.")
                 self.dirty_sections.discard(name)
                 continue
             rng = section["range"]
@@ -117,50 +125,56 @@ class SpreadsheetState:
                     valueInputOption="RAW",
                     body={"values": data},
                 ).execute()
-                log.info(f"SpreadsheetState: Synced section '{name}' to range '{rng}'.")
+                log.info(
+                    f"✅ INFO: Synced section '{name}' to range '{rng}' with {len(data)} rows."
+                )
             except Exception as e:
                 log.error(
-                    f"SpreadsheetState: Error syncing '{name}': {e}", exc_info=True
+                    f"❌ ERROR: Failed syncing section '{name}': {e}", exc_info=True
                 )
             finally:
                 self.dirty_sections.discard(name)
-            # After each section sync, audit queues for ghost gaps
+            # Audit queues after each sync to detect gaps or issues
             helpers.audit_queues(self)
 
     def mark_dirty(self, section_name: str) -> None:
         """
-        Mark a section as dirty (modified, needs sync).
+        Mark a section as dirty indicating it needs to be synced.
+
+        Args:
+            section_name: Name of the section to mark dirty.
         """
         if section_name in self.sections:
             self.dirty_sections.add(section_name)
-            log.debug(f"SpreadsheetState: Marked section '{section_name}' as dirty.")
+            log.debug(
+                f"🧩 DEBUG: Marked section '{section_name}' as dirty for syncing."
+            )
         else:
             log.warning(
-                f"SpreadsheetState: Tried to mark unknown section '{section_name}' as dirty."
+                f"⚠️ WARNING: Attempted to mark unknown section '{section_name}' as dirty."
             )
 
     def visualize(self) -> None:
         """
-        Prints a well-formatted representation of all in-memory data to the console.
+        Print a formatted representation of all in-memory data to the console.
         """
         for name, section in self.sections.items():
             rng = section["range"]
             data = section["data"]
             title = f"=== {name.replace('_', ' ').upper()} ==="
-            log.info(title)
-            log.info(rng)
-            # Print header
+            log.info(f"🧩 DEBUG: {title}")
+            log.info(f"🧩 DEBUG: Range: {rng}")
             if not data:
-                log.info("No data.")
+                log.info("🧩 DEBUG: No data available.")
                 continue
-            # Compute max width for each column
+            # Determine max width per column for alignment
             num_cols = max(len(row) for row in data)
             col_widths = [0] * num_cols
             for row in data:
                 for i in range(num_cols):
                     cell = str(row[i]) if i < len(row) else ""
                     col_widths[i] = max(col_widths[i], len(cell))
-            # Print rows with aligned columns
+            # Print header row
             header_row = "Row | " + " | ".join(f"C{i+1}" for i in range(num_cols))
             sep_row = "----|" + "|".join(
                 "-" * (col_widths[i] + 2) for i in range(num_cols)
@@ -178,8 +192,13 @@ class SpreadsheetState:
 
     def diff(self, other: "SpreadsheetState") -> dict[str, bool]:
         """
-        Compares data between self and another SpreadsheetState instance.
-        Returns a dictionary mapping section names to True if they differ, False otherwise.
+        Compare this state with another SpreadsheetState instance.
+
+        Args:
+            other: Another SpreadsheetState instance to compare against.
+
+        Returns:
+            Dict mapping section names to True if data differs, False otherwise.
         """
         differences = {}
         for name in self.sections:
@@ -190,7 +209,10 @@ class SpreadsheetState:
 
     def clone(self) -> "SpreadsheetState":
         """
-        Returns a deep copy of this SpreadsheetState instance.
+        Create a deep copy of this SpreadsheetState instance.
+
+        Returns:
+            A new SpreadsheetState instance with copied data.
         """
         new_state = SpreadsheetState()
         new_state.sections = copy.deepcopy(self.sections)
@@ -199,6 +221,17 @@ class SpreadsheetState:
 
 
 def load_state_from_sheets(service, spreadsheet_id):
+    """
+    Load spreadsheet state from Google Sheets for selected ranges.
+
+    Args:
+        service: Google Sheets API service instance.
+        spreadsheet_id: ID of the spreadsheet to load from.
+
+    Returns:
+        SpreadsheetState instance populated with loaded data.
+    """
+
     def get_values(range_name, expected_cols):
         try:
             result = (
@@ -208,12 +241,13 @@ def load_state_from_sheets(service, spreadsheet_id):
                 .execute()
             )
             values = result.get("values", [])
+            # Pad rows to expected column count
             return [row + [""] * (expected_cols - len(row)) for row in values]
         except Exception as e:
-            log.error(f"Error loading range {range_name}: {e}")
+            log.error(f"❌ ERROR: Failed loading range '{range_name}': {e}")
             return []
 
-    log.info("Loading spreadsheet state from Google Sheets...")
+    log.info("✅ INFO: Loading spreadsheet state from Google Sheets...")
 
     current = get_values(config.CURRENT_QUEUE_RANGE, 5)
     priority = get_values(config.PRIORITY_QUEUE_RANGE, 5)
@@ -222,8 +256,8 @@ def load_state_from_sheets(service, spreadsheet_id):
     rejected = get_values(config.REJECTED_SUBMISSIONS_RANGE, 7)
 
     log.info(
-        f"Loaded state: {len(current)} current, {len(priority)} priority, "
-        f"{len(nonpriority)} nonpriority, {len(report)} reports, {len(rejected)} rejected"
+        f"✅ INFO: Loaded state counts - current: {len(current)}, priority: {len(priority)}, "
+        f"nonpriority: {len(nonpriority)}, reports: {len(report)}, rejected: {len(rejected)}"
     )
 
     state = SpreadsheetState()

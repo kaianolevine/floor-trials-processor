@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """
-main.py — Continuous Google Sheets watcher + processor utilising kaiano-common-utils.
+main.py — Continuous Google Sheets watcher and processor using kaiano-common-utils.
 
-This script will run for a configurable time, poll a configurable sheet range at a configurable interval,
-and when values change in the watched sheet it will trigger processing (moving rows etc.).
+Runs for a configurable duration, polling a specified sheet range at set intervals.
+Triggers processing when watched sheet values change (e.g., moving rows).
+
+Main flow:
+- Verify automation control cell to decide if watcher should run.
+- Poll sheet data, process submissions and actions.
+- Periodically sync in-memory state back to Sheets.
+- Log progress with clear, standardized prefixes.
 """
-
 
 import time
 from datetime import datetime, timedelta, timezone
@@ -23,34 +28,35 @@ from floor_trials_processor.state import SpreadsheetState
 
 
 def isRunning(service, spreadsheet_id: str) -> bool:
-    # Check automation control cell value before running watcher loop
+    """Check automation control cell to determine if watcher should run."""
     try:
         h2_value_rows = helpers.fetch_sheet_values(
             service, spreadsheet_id, config.AUTOMATION_CONTROL_CELL
         )
         h2_val = h2_value_rows[0][0] if h2_value_rows and h2_value_rows[0] else ""
-        log.info(f"Fetched {config.AUTOMATION_CONTROL_CELL} value: '{h2_val}'")
+        log.info(f"✅ INFO: {config.AUTOMATION_CONTROL_CELL} value fetched: '{h2_val}'")
+
         if str(h2_val).strip().lower() != "runautomations":
             log.warning(
-                f"Automation stopped: {config.AUTOMATION_CONTROL_CELL} is not RunAutomations (value was '{h2_val}')"
+                f"⚠️ WARNING: Automation stopped; "
+                f"{config.AUTOMATION_CONTROL_CELL} is not 'RunAutomations' (was '{h2_val}')"
             )
             return False
-        else:
-            log.info(
-                f"{config.AUTOMATION_CONTROL_CELL} is 'RunAutomations' (case-insensitive) — proceeding with watcher."
-            )
+
+        log.info(
+            f"✅ INFO: {config.AUTOMATION_CONTROL_CELL} is 'RunAutomations'; proceeding."
+        )
         return True
+
     except Exception as e:
         log.error(
-            f"Error fetching {config.AUTOMATION_CONTROL_CELL} value: {e}", exc_info=True
+            f"❌ ERROR: Failed to fetch {config.AUTOMATION_CONTROL_CELL} value: {e}",
+            exc_info=True,
         )
-        log.warning("Automation stopped: Could not fetch automation control value.")
+        log.warning("⚠️ WARNING: Automation stopped due to fetch error.")
         return False
 
 
-# ---------------------------------------------------------------------
-# New UTC-based run_watcher implementation
-# ---------------------------------------------------------------------
 def run_watcher(
     spreadsheet_id: str,
     sheet_range: str,
@@ -59,7 +65,8 @@ def run_watcher(
     monitor_range: str,
     start_time: Optional[datetime] = None,
 ):
-    log.info("Watcher starting (UTC-based)")
+    """Run watcher loop, polling sheet and processing changes until duration or stop signal."""
+    log.info("✅ INFO: Watcher starting (UTC-based).")
     service = sheets.get_sheets_service()
 
     st = SpreadsheetState()
@@ -71,26 +78,31 @@ def run_watcher(
         start_time = datetime.now(timezone.utc)
 
     log.info(
-        f"Watcher starting: spreadsheet_id={spreadsheet_id}, range={sheet_range}, "
-        f"interval={interval_seconds}s, duration={duration_minutes}min (UTC), monitor_range={monitor_range}"
+        f"✅ INFO: Starting watcher with spreadsheet_id={spreadsheet_id}, "
+        f"range={sheet_range}, interval={interval_seconds}s, duration={duration_minutes}min, "
+        f"monitor_range={monitor_range}"
     )
+
     iteration = 0
     last_sync_time = time.time()
     ACTION_RANGE = config.MONITOR_RANGE
 
     while datetime.now(timezone.utc) < utc_end_time:
+
         if not isRunning(service, spreadsheet_id):
-            log.info("Automation control cell indicates stop — exiting watcher loop.")
+            log.info(
+                "⚠️ WARNING: Automation control indicates stop; exiting watcher loop."
+            )
             break
 
         iteration += 1
-        log.debug(f"Poll iteration {iteration} start (UTC)")
+        log.debug(f"🧩 DEBUG: Poll iteration {iteration} start.")
         poll_start = time.time()
+
         try:
             in_progress = helpers.update_floor_trial_status(service, spreadsheet_id)
 
             processing.process_raw_submissions_in_memory(st)
-
             processing.import_external_submissions(
                 service, st, config.EXTERNAL_SHEET_ID
             )
@@ -99,13 +111,15 @@ def run_watcher(
                 processing.fill_current_from_queues(service, spreadsheet_id, st)
             else:
                 log.info(
-                    "⏸️ Floor Trial not in progress — skipping current queue population"
+                    "⚠️ WARNING: Floor Trial not in progress; skipping current queue population."
                 )
+
         except Exception as e:
-            log.error(f"Error during polling: {e}", exc_info=True)
+            log.error(f"❌ ERROR: Exception during polling: {e}", exc_info=True)
 
         elapsed = time.time() - poll_start
         sleep_time = max(0, interval_seconds - elapsed)
+
         st.visualize()
 
         try:
@@ -116,32 +130,34 @@ def run_watcher(
                 service, spreadsheet_id, config.CURRENT_UTC_CELL, utc_now_str_iter
             )
             log.debug(
-                f"Heartbeat -> {config.CURRENT_UTC_CELL} set to {utc_now_str_iter}"
+                f"🧩 DEBUG: Heartbeat updated at {config.CURRENT_UTC_CELL} -> {utc_now_str_iter}"
             )
         except Exception as e:
-            log.error(f"Failed to update Current!D2 heartbeat: {e}", exc_info=True)
+            log.error(f"❌ ERROR: Failed to update heartbeat cell: {e}", exc_info=True)
 
         now = time.time()
         if now - last_sync_time >= config.SYNC_INTERVAL_SECONDS:
             log.info(
-                f"Periodic sync: Writing in-memory state to Sheets (every {config.SYNC_INTERVAL_SECONDS}s, UTC-based)"
+                f"✅ INFO: Periodic sync — writing state to Sheets (every {config.SYNC_INTERVAL_SECONDS}s)."
             )
-            try:
 
+            try:
                 action_values = helpers.fetch_sheet_values(
                     service, spreadsheet_id, ACTION_RANGE
                 )
                 any_nonempty = any(
-                    (row and str(row[0]).strip() != "") for row in action_values
+                    row and str(row[0]).strip() != "" for row in action_values
                 )
+
                 if any_nonempty:
                     log.debug(
-                        "Detected at least one non-empty monitored cell; processing changes."
+                        "🧩 DEBUG: Detected non-empty monitored cells; processing changes."
                     )
                 else:
                     log.debug(
-                        "No non-empty values in monitored cells this poll iteration."
+                        "🧩 DEBUG: No changes detected in monitored cells this iteration."
                     )
+
                 processing.process_actions(
                     service=service,
                     spreadsheet_id=spreadsheet_id,
@@ -151,6 +167,7 @@ def run_watcher(
                 )
 
                 st.sync_to_sheets(service, spreadsheet_id)
+
                 try:
                     utc_now_str = datetime.now(timezone.utc).strftime(
                         "%Y-%m-%d %H:%M:%S UTC"
@@ -159,63 +176,72 @@ def run_watcher(
                         service, spreadsheet_id, config.CURRENT_UTC_CELL, utc_now_str
                     )
                     log.info(
-                        f"Updated {config.CURRENT_UTC_CELL} with UTC timestamp {utc_now_str}"
+                        f"✅ INFO: Updated {config.CURRENT_UTC_CELL} with UTC timestamp {utc_now_str}."
                     )
                 except Exception as e:
                     log.error(
-                        f"Failed to update {config.CURRENT_UTC_CELL} timestamp: {e}",
-                        exc_info=True,
+                        f"❌ ERROR: Failed to update timestamp cell: {e}", exc_info=True
                     )
-                last_sync_time = now
-            except Exception as e:
-                log.error(f"Periodic sync failed: {e}", exc_info=True)
 
-        # Runtime limit check
+                last_sync_time = now
+
+            except Exception as e:
+                log.error(f"❌ ERROR: Periodic sync failed: {e}", exc_info=True)
+
         elapsed_hours = (datetime.now(timezone.utc) - start_time).total_seconds() / 3600
         if elapsed_hours >= config.MAX_RUNTIME_HOURS:
             log.info(
-                f"Reached max runtime of {config.MAX_RUNTIME_HOURS} hours — exiting gracefully."
+                f"✅ INFO: Max runtime of {config.MAX_RUNTIME_HOURS} hours reached; exiting."
             )
             break
 
         log.debug(
-            f"Poll iteration {iteration} took {helpers.format_duration(elapsed)}; sleeping for {helpers.format_duration(sleep_time)} (UTC) …"
+            f"🧩 DEBUG: Poll iteration {iteration} took {helpers.format_duration(elapsed)}; "
+            f"sleeping {helpers.format_duration(sleep_time)}."
         )
+
         time.sleep(sleep_time)
-        log.debug(f"Poll iteration {iteration} end (UTC)")
+        log.debug(f"🧩 DEBUG: Poll iteration {iteration} end.")
 
     st.sync_to_sheets(service, spreadsheet_id)
+
     try:
         utc_now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         helpers.write_sheet_value(
             service, spreadsheet_id, config.CURRENT_UTC_CELL, utc_now_str
         )
-        log.info(f"Updated {config.CURRENT_UTC_CELL} with UTC timestamp {utc_now_str}")
+        log.info(
+            f"✅ INFO: Final update of {config.CURRENT_UTC_CELL} with UTC timestamp {utc_now_str}."
+        )
     except Exception as e:
         log.error(
-            f"Failed to update {config.CURRENT_UTC_CELL} timestamp: {e}", exc_info=True
+            f"❌ ERROR: Failed final update of timestamp cell: {e}", exc_info=True
         )
-    log.info("Watcher finished — runtime limit reached (UTC).")
+
+    log.info("✅ INFO: Watcher finished — runtime limit reached or stopped.")
 
 
 def main():
-    log.info("Starting main function")
+    log.info("✅ INFO: Starting main function.")
     log.info(
-        f"Configuration loaded: SHEET_ID={config.SHEET_ID}, SHEET_RANGE={config.SHEET_RANGE}, INTERVAL_SECONDS={config.INTERVAL_SECONDS}, DURATION_MINUTES={config.DURATION_MINUTES}, MONITOR_RANGE={config.MONITOR_RANGE}"
+        f"✅ INFO: Configuration — SHEET_ID={config.SHEET_ID}, SHEET_RANGE={config.SHEET_RANGE}, "
+        f"INTERVAL_SECONDS={config.INTERVAL_SECONDS}, DURATION_MINUTES={config.DURATION_MINUTES}, "
+        f"MONITOR_RANGE={config.MONITOR_RANGE}"
     )
+
     service = sheets.get_sheets_service()
-    # UTC verification diagnostics (if enabled)
+
     if config.DEBUG_UTC_MODE:
         timing.verify_utc_timing(service, config.SHEET_ID)
-    # Check if we should start this run (based on next floor trial start time)
+
     if not timing.should_start_run(service, config.SHEET_ID):
-        log.info("No active or near-future floor trial — stopping run.")
+        log.info("⚠️ WARNING: No active or upcoming floor trial; stopping run.")
         return
-    # Load state from sheets at startup
+
     state.load_state_from_sheets(service, config.SHEET_ID)
-    # Start time for max runtime check
+
     start_time = datetime.now(timezone.utc)
-    # Main watcher loop with runtime check inside run_watcher
+
     run_watcher(
         config.SHEET_ID,
         config.SHEET_RANGE,
@@ -224,7 +250,8 @@ def main():
         config.MONITOR_RANGE,
         start_time,
     )
-    log.info("Main function complete")
+
+    log.info("✅ INFO: Main function complete.")
 
 
 if __name__ == "__main__":
