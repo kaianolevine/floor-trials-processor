@@ -12,6 +12,7 @@ concurrency:
 
 jobs:
   run:
+    name: Floor Trials Processor (${{ github.event_name }})
     runs-on: ubuntu-latest
     timeout-minutes: 70  # ensures the 1-hour watcher can complete safely
 
