@@ -1,10 +1,10 @@
-name: Floor Trials Watcher
+name: Floor Trials Processor
 
 on:
   workflow_dispatch:
   schedule:
     # Run every hour at minute 45
-    - cron: "45 * * * *"
+    - cron: "30 * * * *"
 
 concurrency:
   group: floor-trials-watcher
