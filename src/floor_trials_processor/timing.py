@@ -17,7 +17,7 @@ def should_start_run(service, spreadsheet_id) -> bool:
     Returns False if the start time is more than MAX_START_DELAY_HOURS away.
     """
     start_str = helpers.get_single_cell(
-        service, spreadsheet_id, config.FLOOR_START_RANGE
+        service, spreadsheet_id, config.FLOOR_OPEN_RANGE
     )
     dt_start = None
     if start_str:
@@ -29,6 +29,19 @@ def should_start_run(service, spreadsheet_id) -> bool:
                 break
             except Exception:
                 continue
+
+    end_str = helpers.get_single_cell(service, spreadsheet_id, config.FLOOR_END_RANGE)
+    dt_end = None
+    if end_str:
+        for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
+            try:
+                dt_end = datetime.strptime(end_str.strip(), fmt).replace(
+                    tzinfo=timezone.utc
+                )
+                break
+            except Exception:
+                continue
+
     if not dt_start:
         log.warning(
             "⚠️ WARNING: No valid floor trial start time found — exiting gracefully."
@@ -36,12 +49,26 @@ def should_start_run(service, spreadsheet_id) -> bool:
         return False
 
     now_utc = datetime.now(timezone.utc)
-    if dt_start > now_utc + timedelta(hours=config.MAX_START_DELAY_HOURS):
-        log.info(
-            f"✅ INFO: Floor trial starts at {dt_start} (more than {config.MAX_START_DELAY_HOURS} hours away) — exiting early."
-        )
+
+    start_within_delay = dt_start <= now_utc + timedelta(
+        hours=config.MAX_START_DELAY_HOURS
+    )
+    end_within_runtime = dt_end is not None and dt_end <= now_utc + timedelta(
+        hours=config.MAX_RUNTIME_HOURS
+    )
+
+    if start_within_delay or end_within_runtime:
+        return True
+    else:
+        if not start_within_delay:
+            log.info(
+                f"✅ INFO: Floor trial starts at {dt_start} (more than {config.MAX_START_DELAY_HOURS} hours away) — exiting early."
+            )
+        if dt_end and not end_within_runtime:
+            log.info(
+                f"✅ INFO: Floor trial ends at {dt_end} (more than {config.MAX_RUNTIME_HOURS} hours away) — exiting early."
+            )
         return False
-    return True
 
 
 def verify_utc_timing(service, sheet_id) -> Optional[dict]:

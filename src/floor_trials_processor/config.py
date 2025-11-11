@@ -31,8 +31,8 @@ MAX_RUN_COUNT_FOR_PRIORITY = 3
 SYNC_INTERVAL_SECONDS = 10
 
 # === New runtime and start delay constants ===
-MAX_RUNTIME_HOURS = 5
-MAX_START_DELAY_HOURS = 1.5
+MAX_RUNTIME_HOURS = 5.25
+MAX_START_DELAY_HOURS = 1.0
 
 # Status text
 STATUS_NOT_ACTIVE = "Floor Trials Not Active"

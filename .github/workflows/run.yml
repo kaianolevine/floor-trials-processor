@@ -4,8 +4,8 @@ run-name: Floor Trials Processor (${{ github.event_name }})
 on:
   workflow_dispatch:
   schedule:
-    # Run every hour at minute 45
-    - cron: "30 * * * *"
+    # Run every hour at minute 00
+    - cron: "0 * * * *"
 
 concurrency:
   group: floor-trials-watcher
@@ -14,7 +14,7 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 70  # ensures the 1-hour watcher can complete safely
+    timeout-minutes: 340
 
     env:
       # Environment configs — can be overridden via GitHub Secrets or workflow dispatch inputs
