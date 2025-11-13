@@ -397,3 +397,51 @@ def update_floor_trial_status(service, spreadsheet_id):
     except Exception as e:
         log.error(f"❌ ERROR: update_floor_trial_status exception: {e}", exc_info=True)
         return False
+
+
+def get_floor_trial_times(service, spreadsheet_id):
+    """
+    Retrieve UTC datetimes for floor trial open, start, and end times.
+
+    Args:
+        service: Google Sheets API service instance.
+        spreadsheet_id (str): Spreadsheet identifier.
+
+    Returns:
+        dict: {
+            "open": datetime or None,
+            "start": datetime or None,
+            "end": datetime or None
+        }
+    """
+    try:
+        ranges = [
+            config.FLOOR_OPEN_RANGE,
+            config.FLOOR_START_RANGE,
+            config.FLOOR_END_RANGE,
+        ]
+        result = (
+            service.spreadsheets()
+            .values()
+            .batchGet(spreadsheetId=spreadsheet_id, ranges=ranges)
+            .execute()
+        )
+        open_val = result.get("valueRanges", [])[0].get("values", [])
+        start_val = result.get("valueRanges", [])[1].get("values", [])
+        end_val = result.get("valueRanges", [])[2].get("values", [])
+        open_str = open_val[0][0].strip() if open_val and open_val[0] else ""
+        start_str = start_val[0][0].strip() if start_val and start_val[0] else ""
+        end_str = end_val[0][0].strip() if end_val and end_val[0] else ""
+
+        dt_open = parse_utc_datetime(open_str)
+        dt_start = parse_utc_datetime(start_str)
+        dt_end = parse_utc_datetime(end_str)
+
+        log.info(
+            f"✅ INFO: get_floor_trial_times: Open={dt_open}, Start={dt_start}, End={dt_end}"
+        )
+
+        return {"open": dt_open, "start": dt_start, "end": dt_end}
+    except Exception as e:
+        log.error(f"❌ ERROR: get_floor_trial_times exception: {e}", exc_info=True)
+        return {"open": None, "start": None, "end": None}

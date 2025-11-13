@@ -14,7 +14,6 @@ Main flow:
 
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 
 from kaiano_common_utils import google_sheets as sheets
 from kaiano_common_utils import logger as log
@@ -63,19 +62,23 @@ def run_watcher(
     interval_seconds: int,
     duration_minutes: int,
     monitor_range: str,
-    start_time: Optional[datetime] = None,
 ):
     """Run watcher loop, polling sheet and processing changes until duration or stop signal."""
     log.info("✅ INFO: Watcher starting (UTC-based).")
     service = sheets.get_sheets_service()
+
+    # Retrieve floor trial timing (open, start, end)
+    times = helpers.get_floor_trial_times(service, spreadsheet_id)
+    dt_open = times.get("open")
+    dt_start = times.get("start")
+    dt_end = times.get("end")
 
     st = SpreadsheetState()
     st.load_from_sheets(service, spreadsheet_id)
     st.visualize()
 
     utc_end_time = datetime.now(timezone.utc) + timedelta(minutes=duration_minutes)
-    if start_time is None:
-        start_time = datetime.now(timezone.utc)
+    start_time = datetime.now(timezone.utc)
 
     log.info(
         f"✅ INFO: Starting watcher with spreadsheet_id={spreadsheet_id}, "
@@ -88,6 +91,38 @@ def run_watcher(
     ACTION_RANGE = config.MONITOR_RANGE
 
     while datetime.now(timezone.utc) < utc_end_time:
+
+        # Time-window gating
+        now_utc = datetime.now(timezone.utc)
+
+        # Stop if past end time
+        if dt_end and now_utc > dt_end:
+            log.info(
+                f"⛔ INFO: Current time {now_utc} is past floor trial END time {dt_end}; stopping watcher."
+            )
+            break
+
+        # Only begin running if within 1 hour before open time, or anytime after start time
+        should_run = True
+        one_hour_before_open = None
+        if dt_open:
+            one_hour_before_open = dt_open - timedelta(hours=1)
+
+        if one_hour_before_open and now_utc < one_hour_before_open:
+            should_run = False
+        if (
+            dt_start
+            and now_utc < dt_start
+            and (not one_hour_before_open or now_utc < one_hour_before_open)
+        ):
+            should_run = False
+
+        if not should_run:
+            log.info(
+                f"⏸️ INFO: Outside floor trial window — "
+                f"now={now_utc}, open={dt_open}, start={dt_start}, end={dt_end}; skipping this iteration."
+            )
+            break
 
         if not isRunning(service, spreadsheet_id):
             log.info(
@@ -240,15 +275,12 @@ def main():
 
     state.load_state_from_sheets(service, config.SHEET_ID)
 
-    start_time = datetime.now(timezone.utc)
-
     run_watcher(
         config.SHEET_ID,
         config.SHEET_RANGE,
         config.INTERVAL_SECONDS,
         config.DURATION_MINUTES,
         config.MONITOR_RANGE,
-        start_time,
     )
 
     log.info("✅ INFO: Main function complete.")
