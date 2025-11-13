@@ -371,13 +371,13 @@ def update_floor_trial_status(service, spreadsheet_id):
         )
 
         status = config.STATUS_NOT_ACTIVE
-        if dt_start and dt_end:
+        if dt_start and dt_open and dt_end:
             if dt_start <= now_utc <= dt_end:
                 status = config.STATUS_IN_PROGRESS
-            elif now_utc < dt_start:
+            elif dt_open <= now_utc < dt_start:
                 status = config.STATUS_OPEN
             elif now_utc > dt_end:
-                status = config.STATUS_CLOSED
+                status = config.STATUS_NOT_ACTIVE
 
         # Use write_sheet_value; fallback to direct API call if needed
         try:

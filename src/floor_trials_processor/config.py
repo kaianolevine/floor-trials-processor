@@ -35,10 +35,9 @@ MAX_RUNTIME_HOURS = 5.25
 MAX_START_DELAY_HOURS = 1.0
 
 # Status text
-STATUS_NOT_ACTIVE = "Floor Trials Not Active"
-STATUS_IN_PROGRESS = "Floor Trials In Progress"
-STATUS_OPEN = "Floor Trials Open for Submissions"
-STATUS_CLOSED = "Floor Trials Closed"
+STATUS_NOT_ACTIVE = "Floor Trials - Not Active"
+STATUS_IN_PROGRESS = "Floor Trials - In Progress"
+STATUS_OPEN = "Floor Trials - Open for Check-in"
 
 # Additional sheet/range constants (for backward compatibility)
 SHEET_RANGE = f"{CURRENT_SHEET}!A:Z"
