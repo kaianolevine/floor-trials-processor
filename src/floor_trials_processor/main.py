@@ -96,9 +96,11 @@ def run_watcher(
         now_utc = datetime.now(timezone.utc)
 
         # Stop if past end time
-        if dt_end and now_utc > dt_end:
+        if dt_end and now_utc > (
+            dt_end + timedelta(minutes=config.FLOOR_END_BUFFER_MIN)
+        ):
             log.info(
-                f"⛔ INFO: Current time {now_utc} is past floor trial END time {dt_end}; stopping watcher."
+                f"⛔ INFO: Current time {now_utc} is past floor trial END time + buffer ({dt_end} + {config.FLOOR_END_BUFFER_MIN}min); stopping watcher."
             )
             break
 
