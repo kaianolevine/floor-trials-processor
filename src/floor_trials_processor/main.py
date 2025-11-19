@@ -159,19 +159,6 @@ def run_watcher(
 
         st.visualize()
 
-        try:
-            utc_now_str_iter = datetime.now(timezone.utc).strftime(
-                "%Y-%m-%d %H:%M:%S UTC"
-            )
-            helpers.write_sheet_value(
-                service, spreadsheet_id, config.CURRENT_UTC_CELL, utc_now_str_iter
-            )
-            log.debug(
-                f"🧩 DEBUG: Heartbeat updated at {config.CURRENT_UTC_CELL} -> {utc_now_str_iter}"
-            )
-        except Exception as e:
-            log.error(f"❌ ERROR: Failed to update heartbeat cell: {e}", exc_info=True)
-
         now = time.time()
         if now - last_sync_time >= config.SYNC_INTERVAL_SECONDS:
             log.info(
@@ -267,6 +254,17 @@ def main():
     )
 
     service = sheets.get_sheets_service()
+
+    try:
+        utc_now_str_iter = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        helpers.write_sheet_value(
+            service, config.SHEET_ID, config.CURRENT_UTC_CELL, utc_now_str_iter
+        )
+        log.debug(
+            f"🧩 DEBUG: Heartbeat updated at {config.CURRENT_UTC_CELL} -> {utc_now_str_iter}"
+        )
+    except Exception as e:
+        log.error(f"❌ ERROR: Failed to update heartbeat cell: {e}", exc_info=True)
 
     if config.DEBUG_UTC_MODE:
         timing.verify_utc_timing(service, config.SHEET_ID)
