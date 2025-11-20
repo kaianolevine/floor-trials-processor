@@ -813,6 +813,9 @@ def process_raw_submissions_in_memory(state: state.SpreadsheetState):
             and trial_end
             and (submission_time < trial_open or submission_time > trial_end)
         ):
+            log.warning(
+                f"Outside accepted submission window, submission_time:{submission_time}, trial_open:{trial_open}, trial_end:{trial_end}"
+            )
             reason = "Outside accepted submission window"
             rejected_data.append(row + [reason])
             continue
