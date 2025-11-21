@@ -321,9 +321,14 @@ def process_actions(
                 )
                 history.append(new_history_row)
                 history_new_rows.append(new_history_row)
+
+                # ⬇️ This is the call you asked for
                 increment_report_from_history_rows(history_new_rows, state)
+
                 log.debug(
-                    f"O-action debug: Updated reports after new history row. history_new_rows_count={len(history_new_rows)}, total_report_rows={len(state.sections['reports']['data'])}"
+                    f"O-action debug: Updated reports after new history row. "
+                    f"history_new_rows_count={len(history_new_rows)}, "
+                    f"total_report_rows={len(state.sections['reports']['data'])}"
                 )
                 log.info(
                     f"process_actions: 'O' at row {row_num} – moved to history in-memory: {new_history_row}"
@@ -834,24 +839,25 @@ def increment_report_from_history_rows(
     history_new_rows: List[List[str]], state: SpreadsheetState
 ):
     """
-    Increment report run counts incrementally based on newly added history rows.
-    Each history row format: [timestamp, leader, follower, division]
-    Report rows format: [leader, follower, division, cue_desc, run_count]
+    Increment run counts for history rows that have just been added.
+    Assumes corresponding report entries already exist.
+    Logs an error if no matching report row is found.
     """
     report = state.sections["reports"]["data"]
+    updated_count = 0
+    missing_count = 0
 
     for hist in history_new_rows:
         hist = normalize_row_length(hist, 4)
-        leader = str(hist[1]).strip() if len(hist) > 1 else ""
-        follower = str(hist[2]).strip() if len(hist) > 2 else ""
-        division = str(hist[3]).strip() if len(hist) > 3 else ""
+        leader = str(hist[1]).strip()
+        follower = str(hist[2]).strip()
+        division = str(hist[3]).strip()
 
         if not (leader or follower or division):
             continue
 
-        updated = False
+        match_found = False
         for rep in report:
-            rep = normalize_row_length(rep, 5)
             r_leader = str(rep[0]).strip()
             r_follower = str(rep[1]).strip()
             r_division = str(rep[2]).strip()
@@ -863,15 +869,24 @@ def increment_report_from_history_rows(
                     run_count = int(rep[4]) if str(rep[4]).strip() else 0
                 except Exception:
                     run_count = 0
+
                 rep[4] = str(run_count + 1)
-                updated = True
+                updated_count += 1
+                match_found = True
+                state.mark_dirty("reports")
+                log.debug(
+                    f"increment_report_from_history_rows: Incremented {leader}/{follower}/{division} -> {rep[4]}"
+                )
                 break
 
-        if not updated:
-            report.append([leader, follower, division, "", "1"])
+        if not match_found:
+            missing_count += 1
+            log.error(
+                f"increment_report_from_history_rows: Report row NOT FOUND for "
+                f"{leader}/{follower}/{division}! History and report OUT OF SYNC!"
+            )
 
-    state.sections["reports"]["data"] = report
-    state.mark_dirty("reports")
     log.info(
-        f"Incrementally updated report counts for {len(history_new_rows)} new history entries."
+        f"increment_report_from_history_rows: Updated {updated_count} existing report entries. "
+        f"Missing {missing_count} report entries."
     )
