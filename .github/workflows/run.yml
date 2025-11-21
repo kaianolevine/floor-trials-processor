@@ -20,6 +20,7 @@ jobs:
       # Environment configs — can be overridden via GitHub Secrets or workflow dispatch inputs
       GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
       GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+      LOGGING_LEVEL: ${{ vars.LOGGING_LEVEL }}
 
     steps:
       - name: 🧩 Checkout repository
