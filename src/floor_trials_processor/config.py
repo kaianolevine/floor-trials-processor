@@ -1,12 +1,12 @@
 # === CONFIGURATION CONSTANTS ===
 SHEET_ID = "1JsWQDnxHis79dHcdlZZlgO1HS5Ldlq8zvLD1FdEwBQ4"
+EXTERNAL_SHEET_ID = "193QJBSQKkW1-c2Z3WHv3o2rbX-zZwn9fnmEACj88cEw"
 
 CURRENT_SHEET = "Current"
 PRIORITY_SHEET = "Priority"
 NON_PRIORITY_SHEET = "NonPriority"
 REPORTS_SHEET = "Reports"
 REJECTED_SHEET = "RejectedSubmissions"
-EXTERNAL_SHEET_ID = "193QJBSQKkW1-c2Z3WHv3o2rbX-zZwn9fnmEACj88cEw"
 
 # Ranges
 CURRENT_QUEUE_RANGE = "Current!E6:I12"
@@ -54,4 +54,3 @@ PRIORITY_DIVISION_RANGE = "Current!F16:F30"
 PRIORITY_FLAG_RANGE = "Current!G16:G30"
 REJECTED_SUBMISSIONS_RANGE = "RejectedSubmissions!B:H"
 EXTERNAL_SOURCE_RANGE = "Form Responses 1!A2:H"
-DEBUG_UTC_MODE = True  # Set to False to disable verbose UTC verification

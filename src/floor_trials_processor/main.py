@@ -21,51 +21,22 @@ from kaiano_common_utils import logger as log
 import floor_trials_processor.config as config
 import floor_trials_processor.helpers as helpers
 import floor_trials_processor.processing as processing
-import floor_trials_processor.state as state
 import floor_trials_processor.timing as timing
 from floor_trials_processor.state import SpreadsheetState
 
 
-def isRunning(service, spreadsheet_id: str) -> bool:
-    """Check automation control cell to determine if watcher should run."""
-    try:
-        h2_value_rows = helpers.fetch_sheet_values(
-            service, spreadsheet_id, config.AUTOMATION_CONTROL_CELL
-        )
-        h2_val = h2_value_rows[0][0] if h2_value_rows and h2_value_rows[0] else ""
-        log.info(f"✅ INFO: {config.AUTOMATION_CONTROL_CELL} value fetched: '{h2_val}'")
-
-        if str(h2_val).strip().lower() != "runautomations":
-            log.warning(
-                f"⚠️ WARNING: Automation stopped; "
-                f"{config.AUTOMATION_CONTROL_CELL} is not 'RunAutomations' (was '{h2_val}')"
-            )
-            return False
-
-        log.info(
-            f"✅ INFO: {config.AUTOMATION_CONTROL_CELL} is 'RunAutomations'; proceeding."
-        )
-        return True
-
-    except Exception as e:
-        log.error(
-            f"❌ ERROR: Failed to fetch {config.AUTOMATION_CONTROL_CELL} value: {e}",
-            exc_info=True,
-        )
-        log.warning("⚠️ WARNING: Automation stopped due to fetch error.")
-        return False
-
-
 def run_watcher(
     spreadsheet_id: str,
-    sheet_range: str,
     interval_seconds: int,
     duration_minutes: int,
     monitor_range: str,
+    current_utc_cell: str,
 ):
     """Run watcher loop, polling sheet and processing changes until duration or stop signal."""
-    log.info("✅ INFO: Watcher starting (UTC-based).")
+    log.info("✅ Watcher starting (UTC-based).")
     service = sheets.get_sheets_service()
+
+    floor_trial_end_buffer_mins = config.FLOOR_END_BUFFER_MIN
 
     # Retrieve floor trial timing (open, start, end)
     times = helpers.get_floor_trial_times(service, spreadsheet_id)
@@ -77,30 +48,36 @@ def run_watcher(
     st.load_from_sheets(service, spreadsheet_id)
     st.visualize()
 
-    utc_end_time = datetime.now(timezone.utc) + timedelta(minutes=duration_minutes)
     start_time = datetime.now(timezone.utc)
-
-    log.info(
-        f"✅ INFO: Starting watcher with spreadsheet_id={spreadsheet_id}, "
-        f"range={sheet_range}, interval={interval_seconds}s, duration={duration_minutes}min, "
-        f"monitor_range={monitor_range}"
-    )
-
+    max_end_time = start_time + timedelta(minutes=duration_minutes)
     iteration = 0
     last_sync_time = time.time()
-    ACTION_RANGE = config.MONITOR_RANGE
 
-    while datetime.now(timezone.utc) < utc_end_time:
+    service = sheets.get_sheets_service()
+
+    timing.verify_utc_timing(service, spreadsheet_id)
+    utc_now_str_iter = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    helpers.write_sheet_value(
+        service, spreadsheet_id, current_utc_cell, utc_now_str_iter
+    )
+    log.debug(
+        f"🧩 DEBUG: Heartbeat updated at {current_utc_cell} -> {utc_now_str_iter}"
+    )
+
+    if not timing.should_start_run(service, spreadsheet_id):
+        log.info("⚠️ WARNING: No active or upcoming floor trial; stopping run.")
+        return
+
+    while datetime.now(timezone.utc) < max_end_time:
 
         # Time-window gating
         now_utc = datetime.now(timezone.utc)
-
         # Stop if past end time
         if dt_end and now_utc > (
-            dt_end + timedelta(minutes=config.FLOOR_END_BUFFER_MIN)
+            dt_end + timedelta(minutes=floor_trial_end_buffer_mins)
         ):
             log.info(
-                f"⛔ INFO: Current time {now_utc} is past floor trial END time + buffer ({dt_end} + {config.FLOOR_END_BUFFER_MIN}min); stopping watcher."
+                f"⛔ Current time {now_utc} is past floor trial END time + buffer ({dt_end} + {floor_trial_end_buffer_mins}min); stopping watcher."
             )
             break
 
@@ -108,7 +85,7 @@ def run_watcher(
         should_run = True
         one_hour_before_open = None
         if dt_open:
-            one_hour_before_open = dt_open - timedelta(hours=1)
+            one_hour_before_open = dt_open - timedelta(hours=1)  # TODO config
 
         if one_hour_before_open and now_utc < one_hour_before_open:
             should_run = False
@@ -126,7 +103,7 @@ def run_watcher(
             )
             break
 
-        if not isRunning(service, spreadsheet_id):
+        if not timing.isRunning(service, spreadsheet_id):
             log.info(
                 "⚠️ WARNING: Automation control indicates stop; exiting watcher loop."
             )
@@ -167,7 +144,7 @@ def run_watcher(
 
             try:
                 action_values = helpers.fetch_sheet_values(
-                    service, spreadsheet_id, ACTION_RANGE
+                    service, spreadsheet_id, monitor_range
                 )
                 any_nonempty = any(
                     row and str(row[0]).strip() != "" for row in action_values
@@ -185,7 +162,7 @@ def run_watcher(
                 processing.process_actions(
                     service=service,
                     spreadsheet_id=spreadsheet_id,
-                    monitor_range=ACTION_RANGE,
+                    monitor_range=monitor_range,
                     current_values=action_values,
                     state=st,
                 )
@@ -197,10 +174,10 @@ def run_watcher(
                         "%Y-%m-%d %H:%M:%S UTC"
                     )
                     helpers.write_sheet_value(
-                        service, spreadsheet_id, config.CURRENT_UTC_CELL, utc_now_str
+                        service, spreadsheet_id, current_utc_cell, utc_now_str
                     )
                     log.info(
-                        f"✅ INFO: Updated {config.CURRENT_UTC_CELL} with UTC timestamp {utc_now_str}."
+                        f"✅ INFO: Updated {current_utc_cell} with UTC timestamp {utc_now_str}."
                     )
                 except Exception as e:
                     log.error(
@@ -232,10 +209,10 @@ def run_watcher(
     try:
         utc_now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         helpers.write_sheet_value(
-            service, spreadsheet_id, config.CURRENT_UTC_CELL, utc_now_str
+            service, spreadsheet_id, current_utc_cell, utc_now_str
         )
         log.info(
-            f"✅ INFO: Final update of {config.CURRENT_UTC_CELL} with UTC timestamp {utc_now_str}."
+            f"✅ INFO: Final update of {current_utc_cell} with UTC timestamp {utc_now_str}."
         )
     except Exception as e:
         log.error(
@@ -246,44 +223,26 @@ def run_watcher(
 
 
 def main():
-    log.info("✅ INFO: Starting main function.")
-    log.info(
-        f"✅ INFO: Configuration — SHEET_ID={config.SHEET_ID}, SHEET_RANGE={config.SHEET_RANGE}, "
-        f"INTERVAL_SECONDS={config.INTERVAL_SECONDS}, DURATION_MINUTES={config.DURATION_MINUTES}, "
-        f"MONITOR_RANGE={config.MONITOR_RANGE}"
-    )
+    """Main function to start the floor trials processor watcher."""
 
-    service = sheets.get_sheets_service()
+    sheet_id = config.SHEET_ID
+    interval_seconds = config.INTERVAL_SECONDS
+    duration_minutes = config.DURATION_MINUTES
+    monitor_range = config.MONITOR_RANGE
+    current_utc_cell = config.CURRENT_UTC_CELL
 
-    try:
-        utc_now_str_iter = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-        helpers.write_sheet_value(
-            service, config.SHEET_ID, config.CURRENT_UTC_CELL, utc_now_str_iter
-        )
-        log.debug(
-            f"🧩 DEBUG: Heartbeat updated at {config.CURRENT_UTC_CELL} -> {utc_now_str_iter}"
-        )
-    except Exception as e:
-        log.error(f"❌ ERROR: Failed to update heartbeat cell: {e}", exc_info=True)
-
-    if config.DEBUG_UTC_MODE:
-        timing.verify_utc_timing(service, config.SHEET_ID)
-
-    if not timing.should_start_run(service, config.SHEET_ID):
-        log.info("⚠️ WARNING: No active or upcoming floor trial; stopping run.")
-        return
-
-    state.load_state_from_sheets(service, config.SHEET_ID)
+    log.info("✅ Starting main function.")
+    log.info(f"✅ Configuration — SHEET_ID={sheet_id}")
+    log.info(f"✅ Configuration — INTERVAL_SECONDS={interval_seconds}")
+    log.info(f"✅ Configuration — DURATION_MINUTES={duration_minutes}")
+    log.info(f"✅ Configuration — MONITOR_RANGE={monitor_range}")
+    log.info(f"✅ Configuration — CURRENT_UTC_CELL={current_utc_cell}")
 
     run_watcher(
-        config.SHEET_ID,
-        config.SHEET_RANGE,
-        config.INTERVAL_SECONDS,
-        config.DURATION_MINUTES,
-        config.MONITOR_RANGE,
+        sheet_id, interval_seconds, duration_minutes, monitor_range, current_utc_cell
     )
 
-    log.info("✅ INFO: Main function complete.")
+    log.info("✅ Main function complete.")
 
 
 if __name__ == "__main__":

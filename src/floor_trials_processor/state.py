@@ -71,13 +71,17 @@ class SpreadsheetState:
 
     def load_from_sheets(self, service: Any, spreadsheet_id: str) -> None:
         """
-        Load all configured section data from Google Sheets in a batch request.
+        Enhanced loader — batch loads all sections, pads, and cleans queues consistently.
 
         Args:
             service: Google Sheets API service instance.
             spreadsheet_id: ID of the spreadsheet to load from.
         """
-        ranges = [self.sections[name]["range"] for name in self.sections]
+        log.info("✅ INFO: Loading spreadsheet state from Google Sheets (enhanced)...")
+
+        section_order = list(self.sections.keys())
+        ranges = [self.sections[name]["range"] for name in section_order]
+
         try:
             result = (
                 service.spreadsheets()
@@ -86,21 +90,31 @@ class SpreadsheetState:
                 .execute()
             )
             value_ranges = result.get("valueRanges", [])
-            for idx, name in enumerate(self.sections):
-                vals = (
-                    value_ranges[idx].get("values", [])
-                    if idx < len(value_ranges)
-                    else []
-                )
-                self.sections[name]["data"] = vals
-            log.info(
-                "✅ INFO: SpreadsheetState loaded all sections from sheets successfully."
-            )
         except Exception as e:
             log.error(
-                f"❌ ERROR: SpreadsheetState failed to load from sheets: {e}",
-                exc_info=True,
+                f"❌ ERROR: Failed batchGet in load_from_sheets: {e}", exc_info=True
             )
+            return
+
+        for idx, name in enumerate(section_order):
+            section = self.sections[name]
+            expected_cols = section["cols"]
+
+            values = (
+                value_ranges[idx].get("values", []) if idx < len(value_ranges) else []
+            )
+
+            # Pad rows to ensure fixed width
+            padded = [row + [""] * (expected_cols - len(row)) for row in values]
+
+            # Apply queue cleanup for queue sections
+            if name in ["current_queue", "priority_queue", "non_priority_queue"]:
+                cleaned = helpers.clean_and_compact_queue(padded, name)
+                section["data"] = cleaned
+            else:
+                section["data"] = padded
+
+        log.info("✅ INFO: Enhanced state loaded and normalized successfully.")
 
     def sync_to_sheets(self, service: Any, spreadsheet_id: str) -> None:
         """
@@ -218,61 +232,3 @@ class SpreadsheetState:
         new_state.sections = copy.deepcopy(self.sections)
         new_state.dirty_sections = self.dirty_sections.copy()
         return new_state
-
-
-def load_state_from_sheets(service, spreadsheet_id):
-    """
-    Load spreadsheet state from Google Sheets for selected ranges.
-
-    Args:
-        service: Google Sheets API service instance.
-        spreadsheet_id: ID of the spreadsheet to load from.
-
-    Returns:
-        SpreadsheetState instance populated with loaded data.
-    """
-
-    def get_values(range_name, expected_cols):
-        try:
-            result = (
-                service.spreadsheets()
-                .values()
-                .get(spreadsheetId=spreadsheet_id, range=range_name)
-                .execute()
-            )
-            values = result.get("values", [])
-            # Pad rows to expected column count
-            return [row + [""] * (expected_cols - len(row)) for row in values]
-        except Exception as e:
-            log.error(f"❌ ERROR: Failed loading range '{range_name}': {e}")
-            return []
-
-    log.info("✅ INFO: Loading spreadsheet state from Google Sheets...")
-
-    current = get_values(config.CURRENT_QUEUE_RANGE, 5)
-    priority = get_values(config.PRIORITY_QUEUE_RANGE, 5)
-    nonpriority = get_values(config.NON_PRIORITY_QUEUE_RANGE, 5)
-    report = get_values(config.REPORT_RANGE, 5)
-    rejected = get_values(config.REJECTED_SUBMISSIONS_RANGE, 7)
-
-    log.info(
-        f"✅ INFO: Loaded state counts - current: {len(current)}, priority: {len(priority)}, "
-        f"nonpriority: {len(nonpriority)}, reports: {len(report)}, rejected: {len(rejected)}"
-    )
-
-    state = SpreadsheetState()
-    state.sections["current_queue"]["data"] = helpers.clean_and_compact_queue(
-        current, "current_queue"
-    )
-    state.sections["priority_queue"]["data"] = helpers.clean_and_compact_queue(
-        priority, "priority_queue"
-    )
-    state.sections["non_priority_queue"]["data"] = helpers.clean_and_compact_queue(
-        nonpriority, "non_priority_queue"
-    )
-    if "report" in state.sections and "reports" not in state.sections:
-        state.sections["reports"] = state.sections.pop("report")
-    state.sections["reports"]["data"] = report
-    state.sections["rejected_submissions"]["data"] = rejected
-
-    return state
