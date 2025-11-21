@@ -35,6 +35,11 @@ class SpreadsheetState:
                 "data": [],
                 "cols": 5,
             },
+            "raw_submissions": {
+                "range": config.RAW_SUBMISSIONS_RANGE,
+                "data": [],
+                "cols": 5,
+            },
             "rejected_submissions": {
                 "range": config.REJECTED_SUBMISSIONS_RANGE,
                 "data": [],
