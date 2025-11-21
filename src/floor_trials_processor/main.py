@@ -86,6 +86,7 @@ def run_watcher(
         ):
             break
 
+        time.sleep(1)
         now = time.time()
 
         # Step: Floor Trial Heartbeat
@@ -107,19 +108,9 @@ def run_watcher(
             processing.import_external_submissions(
                 service, st, config.EXTERNAL_SHEET_ID
             )
+            time.sleep(1)
             processing.process_raw_submissions_in_memory(st)
-            if floor_trials_in_progress:
-                processing.fill_current_from_queues(service, spreadsheet_id, st)
-                action_values = helpers.fetch_sheet_values(
-                    service, spreadsheet_id, monitor_range
-                )
-                processing.process_actions(
-                    service=service,
-                    spreadsheet_id=spreadsheet_id,
-                    monitor_range=monitor_range,
-                    current_values=action_values,
-                    state=st,
-                )
+            time.sleep(1)
             st.visualize()
             last_step_run["process_submissions"] = now
 
@@ -133,6 +124,7 @@ def run_watcher(
                 action_values = helpers.fetch_sheet_values(
                     service, spreadsheet_id, monitor_range
                 )
+                time.sleep(1)
                 processing.process_actions(
                     service=service,
                     spreadsheet_id=spreadsheet_id,
@@ -140,12 +132,13 @@ def run_watcher(
                     current_values=action_values,
                     state=st,
                 )
-            last_step_run["process_floor_trials"] = now
+                time.sleep(1)
+                st.visualize()
+                last_step_run["process_floor_trials"] = now
 
         # Step: Sync State to Sheets
         elif now - last_step_run["sync_state"] >= STEP_INTERVALS["sync_state"]:
             st.sync_to_sheets(service, spreadsheet_id)
-            st.visualize()
             last_step_run["sync_state"] = now
 
         loop_elapsed = time.time() - last_loop_time
