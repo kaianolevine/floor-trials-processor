@@ -392,8 +392,11 @@ def update_floor_trial_status(service, spreadsheet_id):
                 body={"values": [[status, "", ""]]},
             ).execute()
 
-        log.info(f"✅ INFO: update_floor_trial_status: Updated status to '{status}'")
-        return config.STATUS_IN_PROGRESS in status
+        log.info(f"✅ Updated status: '{status}'")
+        if status == config.STATUS_IN_PROGRESS:
+            return True
+        else:
+            return False
     except Exception as e:
         log.error(f"❌ ERROR: update_floor_trial_status exception: {e}", exc_info=True)
         return False
