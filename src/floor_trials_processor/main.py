@@ -25,6 +25,16 @@ import floor_trials_processor.timing as timing
 from floor_trials_processor.state import SpreadsheetState
 
 
+def update_utc_heartbeat(service, spreadsheet_id: str, current_utc_cell: str):
+    """Update UTC heartbeat cell in the sheet."""
+    service = sheets.get_sheets_service()
+    utc_now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    helpers.write_sheet_value(service, spreadsheet_id, current_utc_cell, utc_now_str)
+    log.debug(
+        f"✅ INFO: Heartbeat updated at {config.CURRENT_UTC_CELL} -> {utc_now_str}"
+    )
+
+
 def run_watcher(
     spreadsheet_id: str,
     interval_seconds: int,
@@ -38,75 +48,35 @@ def run_watcher(
 
     floor_trial_end_buffer_mins = config.FLOOR_END_BUFFER_MIN
 
+    st = SpreadsheetState()
+    st.load_from_sheets(service, spreadsheet_id)
+    st.visualize()
+
     # Retrieve floor trial timing (open, start, end)
     times = helpers.get_floor_trial_times(service, spreadsheet_id)
     dt_open = times.get("open")
     dt_start = times.get("start")
     dt_end = times.get("end")
 
-    st = SpreadsheetState()
-    st.load_from_sheets(service, spreadsheet_id)
-    st.visualize()
-
     start_time = datetime.now(timezone.utc)
     max_end_time = start_time + timedelta(minutes=duration_minutes)
     iteration = 0
     last_sync_time = time.time()
-
     service = sheets.get_sheets_service()
 
     timing.verify_utc_timing(service, spreadsheet_id)
-    utc_now_str_iter = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    helpers.write_sheet_value(
-        service, spreadsheet_id, current_utc_cell, utc_now_str_iter
-    )
-    log.debug(
-        f"🧩 DEBUG: Heartbeat updated at {current_utc_cell} -> {utc_now_str_iter}"
-    )
-
-    if not timing.should_start_run(service, spreadsheet_id):
-        log.info("⚠️ WARNING: No active or upcoming floor trial; stopping run.")
-        return
+    update_utc_heartbeat(service, spreadsheet_id, current_utc_cell)
 
     while datetime.now(timezone.utc) < max_end_time:
 
-        # Time-window gating
-        now_utc = datetime.now(timezone.utc)
-        # Stop if past end time
-        if dt_end and now_utc > (
-            dt_end + timedelta(minutes=floor_trial_end_buffer_mins)
+        if not timing.check_should_continue_run(
+            service,
+            spreadsheet_id,
+            dt_open,
+            dt_start,
+            dt_end,
+            floor_trial_end_buffer_mins,
         ):
-            log.info(
-                f"⛔ Current time {now_utc} is past floor trial END time + buffer ({dt_end} + {floor_trial_end_buffer_mins}min); stopping watcher."
-            )
-            break
-
-        # Only begin running if within 1 hour before open time, or anytime after start time
-        should_run = True
-        one_hour_before_open = None
-        if dt_open:
-            one_hour_before_open = dt_open - timedelta(hours=1)  # TODO config
-
-        if one_hour_before_open and now_utc < one_hour_before_open:
-            should_run = False
-        if (
-            dt_start
-            and now_utc < dt_start
-            and (not one_hour_before_open or now_utc < one_hour_before_open)
-        ):
-            should_run = False
-
-        if not should_run:
-            log.info(
-                f"⏸️ INFO: Outside floor trial window — "
-                f"now={now_utc}, open={dt_open}, start={dt_start}, end={dt_end}; skipping this iteration."
-            )
-            break
-
-        if not timing.isRunning(service, spreadsheet_id):
-            log.info(
-                "⚠️ WARNING: Automation control indicates stop; exiting watcher loop."
-            )
             break
 
         iteration += 1

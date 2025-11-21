@@ -71,6 +71,63 @@ def should_start_run(service, spreadsheet_id) -> bool:
         return False
 
 
+def check_should_continue_run(
+    service,
+    spreadsheet_id,
+    dt_open,
+    dt_start,
+    dt_end,
+    floor_trial_end_buffer_mins,
+):
+    """
+    Determines if the watcher should continue running based on
+    the current time relative to event times and automation control signal.
+    """
+
+    now_utc = datetime.now(timezone.utc)
+
+    # Stop immediately if floor trial cannot start or continue
+    if not should_start_run(service, spreadsheet_id):
+        log.info("⛔ No active or upcoming floor trial — stopping watcher.")
+        return False
+
+    # Stop if past end time + safety buffer
+    if dt_end and now_utc > (dt_end + timedelta(minutes=floor_trial_end_buffer_mins)):
+        log.info(
+            f"⛔ Past floor trial end + buffer "
+            f"({dt_end} + {floor_trial_end_buffer_mins}min) — stopping watcher."
+        )
+        return False
+
+    # Only run if we are close enough to opening OR after start time
+    one_hour_before_open = dt_open - timedelta(hours=1) if dt_open else None
+
+    if one_hour_before_open and now_utc < one_hour_before_open:
+        log.info(
+            f"⏸️ Not yet close enough to open — "
+            f"now={now_utc}, earliest run={one_hour_before_open}"
+        )
+        return False
+
+    if (
+        dt_start
+        and now_utc < dt_start
+        and (not one_hour_before_open or now_utc < one_hour_before_open)
+    ):
+        log.info(
+            f"⏸️ Before trial start and not near open window — "
+            f"now={now_utc}, start={dt_start}"
+        )
+        return False
+
+    # Stop if automation control disabled
+    if not isRunning(service, spreadsheet_id):
+        log.info("⛔ Automation turned off — stopping watcher.")
+        return False
+
+    return True
+
+
 def isRunning(service, spreadsheet_id: str) -> bool:
     """Check automation control cell to determine if watcher should run."""
     control_cell = config.AUTOMATION_CONTROL_CELL
