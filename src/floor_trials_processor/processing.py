@@ -321,6 +321,10 @@ def process_actions(
                 )
                 history.append(new_history_row)
                 history_new_rows.append(new_history_row)
+                increment_report_from_history_rows(history_new_rows, state)
+                log.debug(
+                    f"O-action debug: Updated reports after new history row. history_new_rows_count={len(history_new_rows)}, total_report_rows={len(state.sections['reports']['data'])}"
+                )
                 log.info(
                     f"process_actions: 'O' at row {row_num} – moved to history in-memory: {new_history_row}"
                 )
@@ -424,10 +428,6 @@ def process_actions(
         value_input_option="RAW",
     )
     log.info("Cleared processed commands from monitored action range after handling.")
-
-    # --- Incrementally update report from new history rows ---
-    if history_new_rows:
-        increment_report_from_history_rows(history_new_rows, state)
 
     log.info("Processing complete.")
 
