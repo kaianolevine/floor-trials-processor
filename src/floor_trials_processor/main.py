@@ -65,9 +65,10 @@ def run_watcher(
     service = sheets.get_sheets_service()
 
     timing.verify_utc_timing(service, spreadsheet_id)
-    update_utc_heartbeat(service, spreadsheet_id, current_utc_cell)
 
     while datetime.now(timezone.utc) < max_end_time:
+
+        update_utc_heartbeat(service, spreadsheet_id, current_utc_cell)
 
         if not timing.check_should_continue_run(
             service,
@@ -80,36 +81,23 @@ def run_watcher(
             break
 
         iteration += 1
-        log.debug(f"🧩 DEBUG: Poll iteration {iteration} start.")
+        log.debug(f"🧩 Poll iteration {iteration} start.")
         poll_start = time.time()
 
-        try:
-            in_progress = helpers.update_floor_trial_status(service, spreadsheet_id)
+        processing.process_raw_submissions_in_memory(st)
+        processing.import_external_submissions(service, st, config.EXTERNAL_SHEET_ID)
 
-            processing.process_raw_submissions_in_memory(st)
-            processing.import_external_submissions(
-                service, st, config.EXTERNAL_SHEET_ID
-            )
-
-            if in_progress:
-                processing.fill_current_from_queues(service, spreadsheet_id, st)
-            else:
-                log.info(
-                    "⚠️ WARNING: Floor Trial not in progress; skipping current queue population."
-                )
-
-        except Exception as e:
-            log.error(f"❌ ERROR: Exception during polling: {e}", exc_info=True)
-
-        elapsed = time.time() - poll_start
-        sleep_time = max(0, interval_seconds - elapsed)
+        if helpers.update_floor_trial_status(service, spreadsheet_id):
+            processing.fill_current_from_queues(service, spreadsheet_id, st)
 
         st.visualize()
 
+        elapsed = time.time() - poll_start
+        sleep_time = max(0, interval_seconds - elapsed)
         now = time.time()
         if now - last_sync_time >= config.SYNC_INTERVAL_SECONDS:
             log.info(
-                f"✅ INFO: Periodic sync — writing state to Sheets (every {config.SYNC_INTERVAL_SECONDS}s)."
+                f"✅ Periodic sync — writing state to Sheets (every {config.SYNC_INTERVAL_SECONDS}s)."
             )
 
             try:
@@ -122,11 +110,11 @@ def run_watcher(
 
                 if any_nonempty:
                     log.debug(
-                        "🧩 DEBUG: Detected non-empty monitored cells; processing changes."
+                        "🧩 Detected non-empty monitored cells; processing changes."
                     )
                 else:
                     log.debug(
-                        "🧩 DEBUG: No changes detected in monitored cells this iteration."
+                        "🧩 No changes detected in monitored cells this iteration."
                     )
 
                 processing.process_actions(
@@ -137,57 +125,23 @@ def run_watcher(
                     state=st,
                 )
 
-                st.sync_to_sheets(service, spreadsheet_id)
-
-                try:
-                    utc_now_str = datetime.now(timezone.utc).strftime(
-                        "%Y-%m-%d %H:%M:%S UTC"
-                    )
-                    helpers.write_sheet_value(
-                        service, spreadsheet_id, current_utc_cell, utc_now_str
-                    )
-                    log.info(
-                        f"✅ INFO: Updated {current_utc_cell} with UTC timestamp {utc_now_str}."
-                    )
-                except Exception as e:
-                    log.error(
-                        f"❌ ERROR: Failed to update timestamp cell: {e}", exc_info=True
-                    )
+                # st.sync_to_sheets(service, spreadsheet_id)
 
                 last_sync_time = now
 
             except Exception as e:
-                log.error(f"❌ ERROR: Periodic sync failed: {e}", exc_info=True)
-
-        elapsed_hours = (datetime.now(timezone.utc) - start_time).total_seconds() / 3600
-        if elapsed_hours >= config.MAX_RUNTIME_HOURS:
-            log.info(
-                f"✅ INFO: Max runtime of {config.MAX_RUNTIME_HOURS} hours reached; exiting."
-            )
-            break
+                log.error(f"❌ Periodic sync failed: {e}", exc_info=True)
 
         log.debug(
-            f"🧩 DEBUG: Poll iteration {iteration} took {helpers.format_duration(elapsed)}; "
+            f"🧩 Poll iteration {iteration} took {helpers.format_duration(elapsed)}; "
             f"sleeping {helpers.format_duration(sleep_time)}."
         )
 
         time.sleep(sleep_time)
         log.debug(f"🧩 DEBUG: Poll iteration {iteration} end.")
 
-    st.sync_to_sheets(service, spreadsheet_id)
-
-    try:
-        utc_now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-        helpers.write_sheet_value(
-            service, spreadsheet_id, current_utc_cell, utc_now_str
-        )
-        log.info(
-            f"✅ INFO: Final update of {current_utc_cell} with UTC timestamp {utc_now_str}."
-        )
-    except Exception as e:
-        log.error(
-            f"❌ ERROR: Failed final update of timestamp cell: {e}", exc_info=True
-        )
+    # st.sync_to_sheets(service, spreadsheet_id)
+    update_utc_heartbeat(service, spreadsheet_id, current_utc_cell)
 
     log.info("✅ INFO: Watcher finished — runtime limit reached or stopped.")
 
