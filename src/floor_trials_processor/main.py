@@ -26,9 +26,9 @@ from floor_trials_processor.state import SpreadsheetState
 
 STEP_INTERVALS = {
     "floor_trial_heartbeat": 20,
-    "process_submissions": 30,
-    "process_floor_trials": 30,
-    "sync_state": 15,
+    "process_submissions": 20,
+    "process_floor_trials": 20,
+    "sync_state": 20,
 }
 
 
@@ -140,7 +140,7 @@ def run_watcher(
                     current_values=action_values,
                     state=st,
                 )
-            last_step_run["process_submissions"] = now
+            last_step_run["process_floor_trials"] = now
 
         # Step: Sync State to Sheets
         elif now - last_step_run["sync_state"] >= STEP_INTERVALS["sync_state"]:
@@ -149,7 +149,7 @@ def run_watcher(
             last_step_run["sync_state"] = now
 
         loop_elapsed = time.time() - last_loop_time
-        sleep_time = max(1, interval_seconds - loop_elapsed)
+        sleep_time = max(0, interval_seconds - loop_elapsed)
         log.debug(f"Sleeping {helpers.format_duration(sleep_time)}.")
         time.sleep(sleep_time)
         last_loop_time = time.time()
