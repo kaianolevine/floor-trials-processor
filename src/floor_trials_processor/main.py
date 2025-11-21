@@ -104,18 +104,6 @@ def run_watcher(
                 action_values = helpers.fetch_sheet_values(
                     service, spreadsheet_id, monitor_range
                 )
-                any_nonempty = any(
-                    row and str(row[0]).strip() != "" for row in action_values
-                )
-
-                if any_nonempty:
-                    log.debug(
-                        "🧩 Detected non-empty monitored cells; processing changes."
-                    )
-                else:
-                    log.debug(
-                        "🧩 No changes detected in monitored cells this iteration."
-                    )
 
                 processing.process_actions(
                     service=service,
