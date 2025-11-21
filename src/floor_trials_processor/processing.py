@@ -167,12 +167,11 @@ def process_actions(
     This function reads the monitored cells (usually "Current!C6:C11"), interprets the actions ("O", "X", "-"),
     and:
       - Updates the in-memory queue/history/report sections of the SpreadsheetState accordingly.
-      - Performs the appropriate Google Sheet operations (move to history, clear row, defer row, compact).
+      - Uses the in-memory state as the source of truth for the queue.
+      - After all logic is applied in memory, pushes the updated queue and history changes back to the sheet.
       - Uses helpers.write_sheet_value with value_input_option="RAW" for all writes.
       - Marks updated state sections dirty after in-memory mutations.
       - After O-actions, reconciles the report run counts using update_report_from_history_in_memory(state).
-      - Compacts and reinserts deferred rows both in memory and in the sheet.
-    This unified function replaces both the legacy direct-sheet and in-memory queue processing.
 
     Args:
         service: Google Sheets API service instance.
@@ -185,8 +184,7 @@ def process_actions(
 
     # --- Range Parsing ---
     def parse_range(range_str: str):
-        """
-        Parse a range string like 'Sheet!C6:C11' or 'Sheet!AA10:AB15'.
+        """Parse a range string like 'Sheet!C6:C11' or 'Sheet!AA10:AB15'.
         Returns (sheet, start_col, start_row, end_col, end_row), all as strings except rows as ints.
         Supports multi-letter columns.
         """
@@ -260,10 +258,10 @@ def process_actions(
 
     def can_modify_range(range_str: str) -> bool:
         """Check if a range is allowed for modification."""
-        parsed = parse_range(range_str)
-        if not parsed:
+        parsed_inner = parse_range(range_str)
+        if not parsed_inner:
             return False
-        sheet, start_col, start_row, end_col, end_row = parsed
+        sheet, start_col, start_row, end_col, end_row = parsed_inner
         if sheet != "Current":
             return True
         for col_idx in range(col_to_index(start_col), col_to_index(end_col) + 1):
@@ -284,12 +282,13 @@ def process_actions(
     # --- Sheet Existence ---
     sheets.ensure_sheet_exists(service, spreadsheet_id, history_sheet)
 
-    # --- Unified In-Memory and Sheet Action Processing ---
+    # --- Unified In-Memory Action Processing ---
     # In-memory: operate on state.sections["current_queue"] and state.sections["history"]
     current_queue = state.sections["current_queue"]["data"]
     history = state.sections["history"]["data"]
     report_data = state.sections["reports"]["data"]
-    # Normalize current_queue to 6 rows, 5 cols
+
+    # Normalize current_queue/history/report_data shapes
     while len(current_queue) < 6:
         current_queue.append([""] * 5)
     for idx in range(len(current_queue)):
@@ -298,19 +297,25 @@ def process_actions(
         history[i] = normalize_row_length(history[i])
     for i in range(len(report_data)):
         report_data[i] = normalize_row_length(report_data[i])
-    # Prepare for deferred "-" rows (for both in-memory and sheet)
-    deferred_minus_rows = []
+
+    # Prepare for deferred "-" rows and newly created history rows
+    deferred_minus_rows: List[List[str]] = []
+    history_new_rows: List[List[str]] = []
+
     # Track if any O-actions occurred (for report reconciliation)
     o_action_occurred = False
-    # Prepare to clear processed actions in sheet
+
+    # Prepare to clear processed actions in sheet (but only write at the end)
     cleared_action_values = copy.deepcopy(current_values)
+
     # Main action loop: process each action (C6:C11 maps to current_queue rows 0-5)
     for idx, row in enumerate(current_values):
         action = row[0].strip() if row and len(row) > 0 else ""
         action_lc = action.lower()
         row_num = monitor_start_row + idx
+
         if action_lc == "o":
-            # --- In-Memory: Move row to history with timestamp, clear row in current_queue ---
+            # Move row to history (in memory) and clear from current_queue
             queue_row = current_queue[idx]
             if any(str(cell).strip() for cell in queue_row):
                 timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -318,249 +323,100 @@ def process_actions(
                     [timestamp, queue_row[1], queue_row[2], queue_row[3]]
                 )
                 history.append(new_history_row)
-                # Increment run count in report section (in-memory)
-                leader = str(queue_row[1]).strip()
-                follower = str(queue_row[2]).strip()
-                division = str(queue_row[3]).strip()
-                found = False
-                for report_row in report_data:
-                    report_row = normalize_row_length(report_row)
-                    r_leader = str(report_row[0]).strip()
-                    r_follower = str(report_row[1]).strip()
-                    r_division = str(report_row[2]).strip()
-                    if names_match(
-                        r_leader, r_follower, r_division, leader, follower, division
-                    ):
-                        try:
-                            count = (
-                                int(str(report_row[4]).strip())
-                                if str(report_row[4]).strip()
-                                else 0
-                            )
-                        except Exception:
-                            count = 0
-                        report_row[4] = str(count + 1)
-                        state.mark_dirty("reports")
-                        log.info(
-                            f"Incremented run count for {leader}/{follower}/{division} (in-memory)"
-                        )
-                        found = True
-                        break
-                if not found:
-                    log.debug(
-                        f"No matching report row found for {leader}/{follower}/{division} to increment run count."
-                    )
-                report_data.sort(key=lambda r: str(r[0]).lower() if len(r) > 0 else "")
-                state.sections["reports"]["data"] = report_data
-                state.mark_dirty("reports")
-                log.info(
-                    "Sorted report data by leader name after run count update (in-memory)."
-                )
+                history_new_rows.append(new_history_row)
                 o_action_occurred = True
+                log.info(
+                    f"process_actions: 'O' at row {row_num} – moved to history in-memory: {new_history_row}"
+                )
             current_queue[idx] = [""] * 5
             cleared_action_values[idx][0] = ""
-            # --- Sheet: Move to history sheet, clear row, update report ---
-            fg_range = f"{monitor_sheet}!F{row_num}:I{row_num}"
-            fg_values = helpers.fetch_sheet_values(service, spreadsheet_id, fg_range)
-            fg_values = fg_values[0] if fg_values and len(fg_values) > 0 else [""] * 4
-            sheet_timestamp = datetime.now(timezone.utc).strftime(
-                "%Y-%m-%d %H:%M:%S UTC"
-            )
-            history_range = f"{history_sheet}!A6:E"
-            history_values = helpers.fetch_sheet_values(
-                service, spreadsheet_id, history_range
-            )
-            append_row = 6 + len(history_values) if history_values else 6
-            new_row = [sheet_timestamp] + fg_values
-            helpers.write_sheet_value(
-                service,
-                spreadsheet_id,
-                f"{history_sheet}!A{append_row}:E{append_row}",
-                [new_row],
-                value_input_option="RAW",
-            )
-            try:
-                helpers.increment_run_count_in_memory(
-                    state, fg_values[0], fg_values[1], fg_values[2]
-                )
-            except Exception as e:
-                log.error(
-                    f"Error incrementing run count via helper: {e}", exc_info=True
-                )
-            clear_fi_range = f"{monitor_sheet}!F{row_num}:I{row_num}"
-            if can_modify_range(clear_fi_range):
-                log.info(
-                    f"Clearing range {clear_fi_range} after processing 'O' action at row {row_num}"
-                )
-                service.spreadsheets().values().clear(
-                    spreadsheetId=spreadsheet_id, range=clear_fi_range, body={}
-                ).execute()
-            else:
-                log.warning(
-                    f"Attempted to clear out-of-bounds range {clear_fi_range}, skipping."
-                )
-            clear_c_range = f"{monitor_sheet}!{monitor_start_col}{row_num}"
-            if can_modify_range(clear_c_range):
-                log.info(
-                    f"Clearing monitored cell {clear_c_range} after processing 'O' action at row {row_num}"
-                )
-                service.spreadsheets().values().clear(
-                    spreadsheetId=spreadsheet_id, range=clear_c_range, body={}
-                ).execute()
-            else:
-                log.warning(
-                    f"Attempted to clear out-of-bounds range {clear_c_range}, skipping."
-                )
+
         elif action_lc == "x":
+            # Clear the row in current_queue (in memory only)
             current_queue[idx] = [""] * 5
             cleared_action_values[idx][0] = ""
-            # --- Sheet: clear row only ---
-            clear_fi_range = f"{monitor_sheet}!F{row_num}:I{row_num}"
-            if can_modify_range(clear_fi_range):
-                log.info(
-                    f"Clearing data in range {clear_fi_range} for 'X' action at row {row_num}"
-                )
-                service.spreadsheets().values().clear(
-                    spreadsheetId=spreadsheet_id, range=clear_fi_range, body={}
-                ).execute()
-            else:
-                log.warning(
-                    f"Attempted to clear out-of-bounds range {clear_fi_range}, skipping."
-                )
-            clear_c_range = f"{monitor_sheet}!{monitor_start_col}{row_num}"
-            if can_modify_range(clear_c_range):
-                log.info(
-                    f"Clearing monitored cell {clear_c_range} for 'X' action at row {row_num}"
-                )
-                service.spreadsheets().values().clear(
-                    spreadsheetId=spreadsheet_id, range=clear_c_range, body={}
-                ).execute()
-            else:
-                log.warning(
-                    f"Attempted to clear out-of-bounds range {clear_c_range}, skipping."
-                )
+            log.info(
+                f"process_actions: 'X' at row {row_num} – cleared current queue row in memory."
+            )
+
         elif action_lc == "-":
-            row_copy = copy.deepcopy(current_queue[idx])
-            if any(str(cell).strip() for cell in row_copy):
-                deferred_minus_rows.append(row_copy)
+            # Defer the row: remove from current_queue, store for re-append after compaction (memory only)
+            queue_row = copy.deepcopy(current_queue[idx])
+            if any(str(cell).strip() for cell in queue_row):
+                normalized_row = normalize_row_length(queue_row)
+                deferred_minus_rows.append(normalized_row)
+                log.info(
+                    f"process_actions: '-' at row {row_num} – deferring row in-memory: {normalized_row}"
+                )
             current_queue[idx] = [""] * 5
             cleared_action_values[idx][0] = ""
-            # --- Sheet: defer row for re-insertion after compaction ---
-            ei_range = f"{monitor_sheet}!E{row_num}:I{row_num}"
-            ei_values = helpers.fetch_sheet_values(service, spreadsheet_id, ei_range)
-            ei_values = ei_values[0] if ei_values and len(ei_values) > 0 else [""] * 5
-            deferred_minus_rows.append(ei_values)
-            if can_modify_range(ei_range):
-                log.debug(f"Clearing E:I in original row {row_num}")
-                service.spreadsheets().values().clear(
-                    spreadsheetId=spreadsheet_id, range=ei_range, body={}
-                ).execute()
-            else:
-                log.warning(
-                    f"Attempted to clear out-of-bounds range {ei_range}, skipping."
-                )
-            clear_c_range = f"{monitor_sheet}!{monitor_start_col}{row_num}"
-            if can_modify_range(clear_c_range):
-                log.info(
-                    f"Clearing monitored cell {clear_c_range} for '-' action at row {row_num}"
-                )
-                service.spreadsheets().values().clear(
-                    spreadsheetId=spreadsheet_id, range=clear_c_range, body={}
-                ).execute()
-            else:
-                log.warning(
-                    f"Attempted to clear out-of-bounds range {clear_c_range}, skipping."
-                )
-        elif str(action).strip() != "":
-            # Unrecognized: clear monitored cell in sheet
-            clear_c_range = f"{monitor_sheet}!{monitor_start_col}{row_num}"
-            if can_modify_range(clear_c_range):
-                log.info(
-                    f"Clearing monitored cell {clear_c_range} for unrecognized value '{action}' at row {row_num}"
-                )
-                service.spreadsheets().values().clear(
-                    spreadsheetId=spreadsheet_id, range=clear_c_range, body={}
-                ).execute()
-            else:
-                log.warning(
-                    f"Attempted to clear out-of-bounds range {clear_c_range}, skipping."
-                )
+
+        elif action_lc != "":
+            # Unrecognized: clear monitored cell later when we write cleared_action_values
+            cleared_action_values[idx][0] = ""
+            log.warning(
+                f"process_actions: Unrecognized action '{action}' at row {row_num}; clearing command only."
+            )
         # else: empty cell, nothing to do
+
     # --- In-Memory: Compact current_queue and reinsert deferred "-" rows ---
     compacted = compact_queue(current_queue, 5)
-    compacted += deferred_minus_rows
+    if deferred_minus_rows:
+        compacted += deferred_minus_rows
     compacted = compacted[:6]
     while len(compacted) < 6:
         compacted.append([""] * 5)
+
     state.sections["current_queue"]["data"] = compacted
     state.sections["history"]["data"] = history
     state.mark_dirty("current_queue")
     state.mark_dirty("history")
-    # --- Sheet: Compaction of main range ---
-    compaction_data = helpers.fetch_sheet_values(
-        service, spreadsheet_id, compaction_range
-    )
-    compaction_data = [
-        row + [""] * (5 - len(row)) if len(row) < 5 else row[:5]
-        for row in compaction_data
-    ]
-    non_empty_rows = [
-        row for row in compaction_data if any(str(cell).strip() for cell in row)
-    ]
+
+    # --- Sheet: Write current queue snapshot from memory into compaction_range ---
+    compaction_data = [normalize_row_length(row, 5) for row in compacted]
     total_rows = len(compaction_data)
-    compacted_sheet = list(non_empty_rows)
-    while len(compacted_sheet) < total_rows:
-        compacted_sheet.append([""] * 5)
     if can_modify_range(compaction_range):
+        comp_sheet, comp_start_col, comp_start_row, comp_end_col, comp_end_row = (
+            parse_range(compaction_range)
+        )
+        target_range = f"{comp_sheet}!{comp_start_col}{comp_start_row}:{comp_end_col}{comp_start_row + total_rows - 1}"
         helpers.write_sheet_value(
             service,
             spreadsheet_id,
-            compaction_range,
-            compacted_sheet,
+            target_range,
+            compaction_data,
             value_input_option="RAW",
         )
-        log.info(f"Compaction complete: {compaction_range} compacted upward.")
+        log.info(
+            f"process_actions: Wrote {total_rows} rows of current queue to {target_range} from in-memory state."
+        )
     else:
         log.warning(
-            f"Attempted to update out-of-bounds range {compaction_range}, skipping compaction."
+            f"process_actions: Compaction range {compaction_range} is not allowed to modify; skipping sheet queue update."
         )
-    # --- Sheet: Reinsertion of deferred '-' rows ---
-    if deferred_minus_rows:
-        compacted_data = helpers.fetch_sheet_values(
-            service, spreadsheet_id, compaction_range
+
+    # --- Sheet: Append new history rows based on in-memory history_new_rows ---
+    if history_new_rows:
+        history_range = f"{history_sheet}!A6:E"
+        existing_history = helpers.fetch_sheet_values(
+            service, spreadsheet_id, history_range
         )
-        compacted_data = [
-            row + [""] * (5 - len(row)) if len(row) < 5 else row[:5]
-            for row in compacted_data
-        ]
-        deferred_minus_rows = [
-            r for r in deferred_minus_rows if any(str(c).strip() for c in r)
-        ]
-        if not deferred_minus_rows:
-            log.warning(
-                "All deferred '-' rows were empty; nothing to reinsert after compaction."
-            )
-        else:
-            non_empty_compacted = [
-                row for row in compacted_data if any(str(cell).strip() for cell in row)
-            ]
-            combined_rows = non_empty_compacted + deferred_minus_rows
-            combined_rows = combined_rows[:total_rows]
-            while len(combined_rows) < total_rows:
-                combined_rows.append([""] * 5)
-            helpers.write_sheet_value(
-                service,
-                spreadsheet_id,
-                compaction_range,
-                combined_rows,
-                value_input_option="RAW",
-            )
-            log.info(
-                f"Deferred '-' actions: {len(deferred_minus_rows)} row(s) successfully reinserted after compaction with single update."
-            )
-            log.info("Compaction and reinsertion of deferred '-' rows complete.")
+        append_row = 6 + len(existing_history) if existing_history else 6
+        end_append_row = append_row + len(history_new_rows) - 1
+        target_history_range = f"{history_sheet}!A{append_row}:E{end_append_row}"
+        helpers.write_sheet_value(
+            service,
+            spreadsheet_id,
+            target_history_range,
+            history_new_rows,
+            value_input_option="RAW",
+        )
+        log.info(
+            f"process_actions: Appended {len(history_new_rows)} new history row(s) to {target_history_range}."
+        )
     else:
-        log.info("No '-' actions to append after compaction.")
+        log.info("process_actions: No 'O' actions – no new history rows to append.")
+
     # --- Write cleared actions back to Google Sheets after processing (always RAW) ---
     helpers.write_sheet_value(
         service,
@@ -570,6 +426,7 @@ def process_actions(
         value_input_option="RAW",
     )
     log.info("Cleared processed commands from monitored action range after handling.")
+
     # --- After O-actions, reconcile counts in report from history (in-memory) ---
     if o_action_occurred:
         update_report_from_history_in_memory(state)
