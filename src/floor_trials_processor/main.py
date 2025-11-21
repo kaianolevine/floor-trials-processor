@@ -25,8 +25,9 @@ import floor_trials_processor.timing as timing
 from floor_trials_processor.state import SpreadsheetState
 
 STEP_INTERVALS = {
-    "floor_trial_heartbeat": 2,
-    "process_submissions": 10,
+    "floor_trial_heartbeat": 20,
+    "process_submissions": 30,
+    "process_floor_trials": 30,
     "sync_state": 15,
 }
 
@@ -99,7 +100,7 @@ def run_watcher(
             last_step_run["floor_trial_heartbeat"] = now
 
         # Step: Process Submissions
-        if (
+        elif (
             now - last_step_run["process_submissions"]
             >= STEP_INTERVALS["process_submissions"]
         ):
@@ -122,8 +123,27 @@ def run_watcher(
             st.visualize()
             last_step_run["process_submissions"] = now
 
+        # Step: Floor Trials Processing
+        elif (
+            now - last_step_run["process_floor_trials"]
+            >= STEP_INTERVALS["process_floor_trials"]
+        ):
+            if floor_trials_in_progress:
+                processing.fill_current_from_queues(service, spreadsheet_id, st)
+                action_values = helpers.fetch_sheet_values(
+                    service, spreadsheet_id, monitor_range
+                )
+                processing.process_actions(
+                    service=service,
+                    spreadsheet_id=spreadsheet_id,
+                    monitor_range=monitor_range,
+                    current_values=action_values,
+                    state=st,
+                )
+            last_step_run["process_submissions"] = now
+
         # Step: Sync State to Sheets
-        if now - last_step_run["sync_state"] >= STEP_INTERVALS["sync_state"]:
+        elif now - last_step_run["sync_state"] >= STEP_INTERVALS["sync_state"]:
             st.sync_to_sheets(service, spreadsheet_id)
             st.visualize()
             last_step_run["sync_state"] = now
