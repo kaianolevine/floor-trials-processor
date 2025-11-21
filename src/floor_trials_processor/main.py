@@ -125,7 +125,7 @@ def run_watcher(
                     state=st,
                 )
 
-                # st.sync_to_sheets(service, spreadsheet_id)
+                st.sync_to_sheets(service, spreadsheet_id)
 
                 last_sync_time = now
 
@@ -140,7 +140,7 @@ def run_watcher(
         time.sleep(sleep_time)
         log.debug(f"🧩 DEBUG: Poll iteration {iteration} end.")
 
-    # st.sync_to_sheets(service, spreadsheet_id)
+    st.sync_to_sheets(service, spreadsheet_id)
     update_utc_heartbeat(service, spreadsheet_id, current_utc_cell)
 
     log.info("✅ INFO: Watcher finished — runtime limit reached or stopped.")
