@@ -429,9 +429,12 @@ def process_actions(
     )
     log.info("Cleared processed commands from monitored action range after handling.")
 
-    # --- After O-actions, reconcile counts in report from history (in-memory) ---
+    # --- Immediately update report counts in memory when history is updated ---
     if o_action_occurred:
         update_report_from_history_in_memory(state)
+        state.mark_dirty("reports")
+        log.info("Updated in-memory report counts before sheet sync.")
+
     log.info("Processing complete.")
 
 
