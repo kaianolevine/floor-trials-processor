@@ -340,14 +340,9 @@ def process_actions(
             )
 
         elif action_lc == "-":
-            # Defer the row: remove from current_queue, store for re-append after compaction (memory only)
             queue_row = copy.deepcopy(current_queue[idx])
             if any(str(cell).strip() for cell in queue_row):
-                normalized_row = normalize_row_length(queue_row)
-                deferred_minus_rows.append(normalized_row)
-                log.info(
-                    f"process_actions: '-' at row {row_num} – deferring row in-memory: {normalized_row}"
-                )
+                deferred_minus_rows.append(normalize_row_length(queue_row))
             current_queue[idx] = [""] * 5
             cleared_action_values[idx][0] = ""
 
