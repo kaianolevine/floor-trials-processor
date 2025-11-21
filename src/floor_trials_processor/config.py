@@ -42,7 +42,7 @@ STATUS_OPEN = "Floor Trials - Open for Check-in"
 
 # Additional sheet/range constants (for backward compatibility)
 SHEET_RANGE = f"{CURRENT_SHEET}!A:Z"
-INTERVAL_SECONDS = 10
+INTERVAL_SECONDS = 1
 DURATION_MINUTES = 60
 MONITOR_RANGE = f"{CURRENT_SHEET}!C6:C11"
 HISTORY_SHEET_NAME = "History"

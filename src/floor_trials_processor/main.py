@@ -24,10 +24,15 @@ import floor_trials_processor.processing as processing
 import floor_trials_processor.timing as timing
 from floor_trials_processor.state import SpreadsheetState
 
+STEP_INTERVALS = {
+    "floor_trial_heartbeat": 2,
+    "process_submissions": 10,
+    "sync_state": 15,
+}
+
 
 def update_utc_heartbeat(service, spreadsheet_id: str, current_utc_cell: str):
     """Update UTC heartbeat cell in the sheet."""
-    service = sheets.get_sheets_service()
     utc_now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     helpers.write_sheet_value(service, spreadsheet_id, current_utc_cell, utc_now_str)
     log.debug(
@@ -60,15 +65,15 @@ def run_watcher(
 
     start_time = datetime.now(timezone.utc)
     max_end_time = start_time + timedelta(minutes=duration_minutes)
-    iteration = 0
-    last_sync_time = time.time()
-    service = sheets.get_sheets_service()
+    floor_trials_in_progress = False
 
     timing.verify_utc_timing(service, spreadsheet_id)
 
-    while datetime.now(timezone.utc) < max_end_time:
+    last_step_run = {step: 0 for step in STEP_INTERVALS}
 
-        update_utc_heartbeat(service, spreadsheet_id, current_utc_cell)
+    last_loop_time = time.time()
+
+    while datetime.now(timezone.utc) < max_end_time:
 
         if not timing.check_should_continue_run(
             service,
@@ -80,31 +85,33 @@ def run_watcher(
         ):
             break
 
-        iteration += 1
-        log.debug(f"🧩 Poll iteration {iteration} start.")
-        poll_start = time.time()
-
-        processing.process_raw_submissions_in_memory(st)
-        processing.import_external_submissions(service, st, config.EXTERNAL_SHEET_ID)
-
-        if helpers.update_floor_trial_status(service, spreadsheet_id):
-            processing.fill_current_from_queues(service, spreadsheet_id, st)
-
-        st.visualize()
-
-        elapsed = time.time() - poll_start
-        sleep_time = max(0, interval_seconds - elapsed)
         now = time.time()
-        if now - last_sync_time >= config.SYNC_INTERVAL_SECONDS:
-            log.info(
-                f"✅ Periodic sync — writing state to Sheets (every {config.SYNC_INTERVAL_SECONDS}s)."
-            )
 
-            try:
+        # Step: Floor Trial Heartbeat
+        if (
+            now - last_step_run["floor_trial_heartbeat"]
+            >= STEP_INTERVALS["floor_trial_heartbeat"]
+        ):
+            update_utc_heartbeat(service, spreadsheet_id, current_utc_cell)
+            floor_trials_in_progress = helpers.update_floor_trial_status(
+                service, spreadsheet_id
+            )
+            last_step_run["floor_trial_heartbeat"] = now
+
+        # Step: Process Submissions
+        if (
+            now - last_step_run["process_submissions"]
+            >= STEP_INTERVALS["process_submissions"]
+        ):
+            processing.import_external_submissions(
+                service, st, config.EXTERNAL_SHEET_ID
+            )
+            processing.process_raw_submissions_in_memory(st)
+            if floor_trials_in_progress:
+                processing.fill_current_from_queues(service, spreadsheet_id, st)
                 action_values = helpers.fetch_sheet_values(
                     service, spreadsheet_id, monitor_range
                 )
-
                 processing.process_actions(
                     service=service,
                     spreadsheet_id=spreadsheet_id,
@@ -112,26 +119,26 @@ def run_watcher(
                     current_values=action_values,
                     state=st,
                 )
+            st.visualize()
+            last_step_run["process_submissions"] = now
 
-                st.sync_to_sheets(service, spreadsheet_id)
+        # Step: Sync State to Sheets
+        if now - last_step_run["sync_state"] >= STEP_INTERVALS["sync_state"]:
+            st.sync_to_sheets(service, spreadsheet_id)
+            st.visualize()
+            last_step_run["sync_state"] = now
 
-                last_sync_time = now
-
-            except Exception as e:
-                log.error(f"❌ Periodic sync failed: {e}", exc_info=True)
-
-        log.debug(
-            f"🧩 Poll iteration {iteration} took {helpers.format_duration(elapsed)}; "
-            f"sleeping {helpers.format_duration(sleep_time)}."
-        )
-
+        loop_elapsed = time.time() - last_loop_time
+        sleep_time = max(1, interval_seconds - loop_elapsed)
+        log.debug(f"Sleeping {helpers.format_duration(sleep_time)}.")
         time.sleep(sleep_time)
-        log.debug(f"🧩 DEBUG: Poll iteration {iteration} end.")
+        last_loop_time = time.time()
 
     st.sync_to_sheets(service, spreadsheet_id)
+    helpers.update_floor_trial_status(service, spreadsheet_id)
     update_utc_heartbeat(service, spreadsheet_id, current_utc_cell)
 
-    log.info("✅ INFO: Watcher finished — runtime limit reached or stopped.")
+    log.info("✅ Watcher finished")
 
 
 def main():
