@@ -354,11 +354,18 @@ def process_actions(
             )
         # else: empty cell, nothing to do
 
-    # --- In-Memory: Compact current_queue and reinsert deferred "-" rows ---
-    compacted = compact_queue(current_queue, 5)
-    if deferred_minus_rows:
-        compacted += deferred_minus_rows
-    compacted = compacted[:6]
+    # --- In-Memory: Rebuild current queue and reinsert deferred "-" rows ---
+    # Take all non-empty rows in their existing order (after O/X/- cleared some),
+    # then append any deferred "-" rows to the bottom. Finally, trim/pad to 6 rows.
+    non_empty_rows: List[List[str]] = [
+        normalize_row_length(row, 5)
+        for row in current_queue
+        if any(str(cell).strip() for cell in row)
+    ]
+    compacted = non_empty_rows + deferred_minus_rows
+    compacted = [normalize_row_length(row, 5) for row in compacted]
+    if len(compacted) > 6:
+        compacted = compacted[:6]
     while len(compacted) < 6:
         compacted.append([""] * 5)
 
