@@ -302,9 +302,6 @@ def process_actions(
     deferred_minus_rows: List[List[str]] = []
     history_new_rows: List[List[str]] = []
 
-    # Track if any O-actions occurred (for report reconciliation)
-    o_action_occurred = False
-
     # Prepare to clear processed actions in sheet (but only write at the end)
     cleared_action_values = copy.deepcopy(current_values)
 
@@ -324,7 +321,6 @@ def process_actions(
                 )
                 history.append(new_history_row)
                 history_new_rows.append(new_history_row)
-                o_action_occurred = True
                 log.info(
                     f"process_actions: 'O' at row {row_num} – moved to history in-memory: {new_history_row}"
                 )
@@ -429,11 +425,9 @@ def process_actions(
     )
     log.info("Cleared processed commands from monitored action range after handling.")
 
-    # --- Immediately update report counts in memory when history is updated ---
-    if o_action_occurred:
-        update_report_from_history_in_memory(state)
-        state.mark_dirty("reports")
-        log.info("Updated in-memory report counts before sheet sync.")
+    # --- Incrementally update report from new history rows ---
+    if history_new_rows:
+        increment_report_from_history_rows(history_new_rows, state)
 
     log.info("Processing complete.")
 
@@ -836,68 +830,48 @@ def process_raw_submissions_in_memory(state: state.SpreadsheetState):
     log.info(f"process_raw_submissions_in_memory: Processed {processed} rows in-memory")
 
 
-# ---------------------------------------------------------------------
-# Update Report from History In-Memory
-# ---------------------------------------------------------------------
-def update_report_from_history_in_memory(state: "SpreadsheetState"):
+def increment_report_from_history_rows(
+    history_new_rows: List[List[str]], state: SpreadsheetState
+):
     """
-    Iterate over the in-memory 'history' section and count how many times each unique
-    (leader, follower, division) combination appears. Then update or add entries in the
-    'report' section with that count (as string in column 4/index 4). Rows in report that
-    don't appear in history are set to "0". After updating, sort the report data by leader name
-    and mark the section as dirty. Log how many counts were updated.
+    Increment report run counts incrementally based on newly added history rows.
+    Each history row format: [timestamp, leader, follower, division]
+    Report rows format: [leader, follower, division, cue_desc, run_count]
     """
-    log.info("update_report_from_history_in_memory: Starting update from history.")
-    history = state.sections["history"]["data"]
     report = state.sections["reports"]["data"]
-    # Build counts for (leader, follower, division) in history
-    counts = {}
-    for row in history:
-        row = normalize_row_length(row)
-        if len(row) < 4:
-            continue
-        leader = str(row[1]).strip()
-        follower = str(row[2]).strip()
-        division = str(row[3]).strip()
+
+    for hist in history_new_rows:
+        hist = normalize_row_length(hist, 4)
+        leader = str(hist[1]).strip() if len(hist) > 1 else ""
+        follower = str(hist[2]).strip() if len(hist) > 2 else ""
+        division = str(hist[3]).strip() if len(hist) > 3 else ""
+
         if not (leader or follower or division):
             continue
-        key = (leader, follower, division)
-        counts[key] = counts.get(key, 0) + 1
-    # Update report rows and build a set for lookup
-    updated = 0
-    report_keys = set()
-    for row in report:
-        row = normalize_row_length(row)
-        leader = str(row[0]).strip()
-        follower = str(row[1]).strip()
-        division = str(row[2]).strip()
-        key = (leader, follower, division)
-        report_keys.add(key)
-        count = counts.get(key, 0)
-        if str(row[4]).strip() != str(count):
-            row[4] = str(count)
-            updated += 1
-    # For keys in history but not in report, add them
-    for key, count in counts.items():
-        if key not in report_keys:
-            leader, follower, division = key
-            # Add with empty cue (col 3), count (col 4)
-            report.append([leader, follower, division, "", str(count)])
-            updated += 1
-    # For report rows not in history, ensure their count is "0"
-    for row in report:
-        row = normalize_row_length(row)
-        leader = str(row[0]).strip()
-        follower = str(row[1]).strip()
-        division = str(row[2]).strip()
-        key = (leader, follower, division)
-        if key not in counts and str(row[4]).strip() != "0":
-            row[4] = "0"
-            updated += 1
-    # Sort report by leader name (column 0)
-    report.sort(key=lambda r: str(r[0]).lower() if r and len(r) > 0 else "")
+
+        updated = False
+        for rep in report:
+            rep = normalize_row_length(rep, 5)
+            r_leader = str(rep[0]).strip()
+            r_follower = str(rep[1]).strip()
+            r_division = str(rep[2]).strip()
+
+            if names_match(
+                r_leader, r_follower, r_division, leader, follower, division
+            ):
+                try:
+                    run_count = int(rep[4]) if str(rep[4]).strip() else 0
+                except Exception:
+                    run_count = 0
+                rep[4] = str(run_count + 1)
+                updated = True
+                break
+
+        if not updated:
+            report.append([leader, follower, division, "", "1"])
+
     state.sections["reports"]["data"] = report
     state.mark_dirty("reports")
     log.info(
-        f"update_report_from_history_in_memory: Updated run counts for {updated} entries."
+        f"Incrementally updated report counts for {len(history_new_rows)} new history entries."
     )
