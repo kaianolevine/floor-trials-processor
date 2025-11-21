@@ -593,7 +593,12 @@ def fill_current_from_queues(service, spreadsheet_id, state):
 # ---------------------------------------------------------------------
 # RawSubmissions processing function
 # ---------------------------------------------------------------------
-def process_raw_submissions_in_memory(state: state.SpreadsheetState):
+def process_raw_submissions_in_memory(
+    state: state.SpreadsheetState,
+    dt_open=None,
+    dt_start=None,
+    dt_end=None,
+):
     """
     Process raw submissions entirely in memory.
     Moves rows from 'raw_submissions' into 'priority_queue' or 'non_priority_queue'
@@ -604,35 +609,6 @@ def process_raw_submissions_in_memory(state: state.SpreadsheetState):
 
     # Configurable max number of Priority runs per couple
     MAX_PRIORITY_RUNS = 3
-
-    service = sheets.get_sheets_service()
-
-    # --- Retrieve new UTC Floor Trial times from Current sheet ---
-    def get_value(service, spreadsheet_id, range_):
-        try:
-            rows = helpers.fetch_sheet_values(service, spreadsheet_id, range_)
-            return rows[0][0] if rows and rows[0] else ""
-        except Exception as e:
-            log.warning(f"Error getting value from {range_}: {e}")
-            return ""
-
-    open_time = get_value(service, config.SHEET_ID, "Current!B15")
-    # start_time = get_value(service, config.SHEET_ID, "Current!B16")
-    end_time = get_value(service, config.SHEET_ID, "Current!B17")
-
-    def parse_utc_string(s):
-        if not s:
-            return None
-        for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
-            try:
-                return datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
-            except Exception:
-                continue
-        return None
-
-    trial_open = parse_utc_string(open_time)
-    # trial_start = parse_utc_string(start_time)
-    trial_end = parse_utc_string(end_time)
 
     raw_data: List[List[str]] = state.sections["raw_submissions"]["data"]
     # Build priority_names and all_known_divs from the row-by-row mapping of division and flag
@@ -671,13 +647,15 @@ def process_raw_submissions_in_memory(state: state.SpreadsheetState):
         except Exception as e:
             log.warning(f"Could not parse submission time '{timestamp}': {e}")
             continue
-        if (
-            trial_open
-            and trial_end
-            and (submission_time < trial_open or submission_time > trial_end)
+
+        # Optional timing filter: only applied if dt_open/dt_end are provided
+        if (dt_open or dt_end) and (
+            (dt_open and submission_time < dt_open)
+            or (dt_end and submission_time > dt_end)
         ):
             log.warning(
-                f"Outside accepted submission window, submission_time:{submission_time}, trial_open:{trial_open}, trial_end:{trial_end}"
+                f"Outside accepted submission window, submission_time:{submission_time}, "
+                f"dt_open:{dt_open}, dt_end:{dt_end}"
             )
             reason = "Outside accepted submission window"
             rejected_data.append(row + [reason])

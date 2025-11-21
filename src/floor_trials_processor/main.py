@@ -109,7 +109,7 @@ def run_watcher(
                 service, st, config.EXTERNAL_SHEET_ID
             )
             time.sleep(1)
-            processing.process_raw_submissions_in_memory(st)
+            processing.process_raw_submissions_in_memory(st, dt_open, dt_start, dt_end)
             time.sleep(1)
             st.visualize()
             last_step_run["process_submissions"] = now
