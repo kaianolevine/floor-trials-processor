@@ -28,7 +28,7 @@ STEP_INTERVALS = {
     "floor_trial_heartbeat": 25,
     "process_submissions": 60,
     "process_floor_trials": 15,
-    "sync_state": 15,
+    "sync_state": 60,
 }
 
 

@@ -530,25 +530,25 @@ def fill_current_from_queues(service, spreadsheet_id, state):
             compacted = compact_queue(pq_rows)
             state.sections["priority_queue"]["data"] = compacted
             state.mark_dirty("priority_queue")
-            log.info(
+            log.debug(
                 f"fill_current_from_queues: Compacted Priority queue — {len([r for r in compacted if any(str(cell).strip() for cell in r)])} non-empty, {len([r for r in compacted if not any(str(cell).strip() for cell in r)])} empty rows"
             )
             current_data[idx] = normalize_row_length(taken_priority)
             state.mark_dirty("current_queue")
-            log.info(
+            log.debug(
                 f"fill_current_from_queues: Filled Current queue row {row_num} (cols E–I) from Priority queue: {taken_priority}"
             )
             changes_made = True
             continue
         # If not Priority, try NonPriority, but only for rows 6–9 (row_num 6,7,8,9)
         if row_num > 9:
-            log.info(
+            log.debug(
                 f"fill_current_from_queues: Skipping NonPriority for row {row_num} (bottom two slots must be Priority only)."
             )
             log.debug(
                 f"fill_current_from_queues: Only Priority queue may fill Current rows 10 and 11 (row {row_num})."
             )
-            log.info(
+            log.debug(
                 f"fill_current_from_queues: No data available to fill row {row_num}."
             )
             continue
@@ -559,7 +559,7 @@ def fill_current_from_queues(service, spreadsheet_id, state):
             if any(str(cell).strip() for cell in npq_row):
                 taken_nonpriority = npq_row
                 npq_rows[npq_idx] = [""] * 5
-                log.info(
+                log.debug(
                     f"fill_current_from_queues: Taking row {npq_idx+3} from NonPriority queue: {taken_nonpriority}"
                 )
                 break
@@ -567,21 +567,21 @@ def fill_current_from_queues(service, spreadsheet_id, state):
             compacted = compact_queue(npq_rows)
             state.sections["non_priority_queue"]["data"] = compacted
             state.mark_dirty("non_priority_queue")
-            log.info(
+            log.debug(
                 f"fill_current_from_queues: Compacted NonPriority queue — {len([r for r in compacted if any(str(cell).strip() for cell in r)])} non-empty, {len([r for r in compacted if not any(str(cell).strip() for cell in r)])} empty rows"
             )
             current_data[idx] = normalize_row_length(taken_nonpriority)
             state.mark_dirty("current_queue")
-            log.info(
+            log.debug(
                 f"fill_current_from_queues: Filled Current queue row {row_num} (cols E–I) from NonPriority queue: {taken_nonpriority}"
             )
             changes_made = True
             continue
-        log.info(f"fill_current_from_queues: No data available to fill row {row_num}.")
+        log.debug(f"fill_current_from_queues: No data available to fill row {row_num}.")
     if not changes_made:
-        log.info("fill_current_from_queues: No empty rows filled.")
+        log.debug("fill_current_from_queues: No empty rows filled.")
     else:
-        log.info(
+        log.debug(
             "fill_current_from_queues: Current queue now starts at column F (E is first column of range); all rows are 5 columns: [E, F, G, H, I]."
         )
     return changes_made

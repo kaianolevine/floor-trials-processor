@@ -176,10 +176,10 @@ class SpreadsheetState:
             rng = section["range"]
             data = section["data"]
             title = f"=== {name.replace('_', ' ').upper()} ==="
-            log.info(f"🧩 DEBUG: {title}")
-            log.info(f"🧩 DEBUG: Range: {rng}")
+            log.debug(f"🧩 DEBUG: {title}")
+            log.debug(f"🧩 DEBUG: Range: {rng}")
             if not data:
-                log.info("🧩 DEBUG: No data available.")
+                log.debug("🧩 DEBUG: No data available.")
                 continue
             # Determine max width per column for alignment
             num_cols = max(len(row) for row in data)
@@ -193,16 +193,16 @@ class SpreadsheetState:
             sep_row = "----|" + "|".join(
                 "-" * (col_widths[i] + 2) for i in range(num_cols)
             )
-            log.info(header_row)
-            log.info(sep_row)
+            log.debug(header_row)
+            log.debug(sep_row)
             for idx, row in enumerate(data):
                 rownum = idx + 1
                 row_cells = []
                 for i in range(num_cols):
                     cell = str(row[i]) if i < len(row) else ""
                     row_cells.append(cell.ljust(col_widths[i]))
-                log.info(f"{rownum:<4}| " + " | ".join(row_cells))
-            log.info("")  # Blank line between sections
+                log.debug(f"{rownum:<4}| " + " | ".join(row_cells))
+            log.debug("")  # Blank line between sections
 
     def diff(self, other: "SpreadsheetState") -> dict[str, bool]:
         """
