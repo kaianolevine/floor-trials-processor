@@ -121,38 +121,27 @@ def check_should_continue_run(
         return False
 
     # Stop if automation control disabled
-    if not isRunning(service, spreadsheet_id):
-        log.info("⛔ Automation turned off — stopping watcher.")
-        return False
-
-    return True
-
-
-def isRunning(service, spreadsheet_id: str) -> bool:
-    """Check automation control cell to determine if watcher should run."""
     control_cell = config.AUTOMATION_CONTROL_CELL
-
     try:
         h2_value_rows = helpers.fetch_sheet_values(
             service, spreadsheet_id, control_cell
         )
         h2_val = h2_value_rows[0][0] if h2_value_rows and h2_value_rows[0] else ""
-        log.info(f"✅ {control_cell} value fetched: '{h2_val}'")
-
+        log.info(f"🔍 {control_cell} value fetched: '{h2_val}'")
         if str(h2_val).strip().lower() != "runautomations":
-            log.warning(f"⚠️ {control_cell} is not 'RunAutomations' (was '{h2_val}')")
+            log.warning(
+                f"⚠️ Automation disabled (value was '{h2_val}') — stopping watcher."
+            )
             return False
-
-        log.info(f"✅ {control_cell} is 'RunAutomations'; proceeding.")
-        return True
-
     except Exception as e:
         log.error(
-            f"❌ ERROR: Failed to fetch {control_cell} value: {e}",
+            f"❌ ERROR: Failed to read automation control cell: {e}",
             exc_info=True,
         )
-        log.warning("⚠️ Automation stopped due to fetch error.")
+        log.warning("⚠️ Exiting watcher due to control-cell read failure.")
         return False
+
+    return True
 
 
 def verify_utc_timing(service, sheet_id) -> Optional[dict]:
