@@ -406,11 +406,8 @@ def process_actions(
 
     # --- Sheet: Append new history rows based on in-memory history_new_rows ---
     if history_new_rows:
-        history_range = f"{history_sheet}!A6:E"
-        existing_history = helpers.fetch_sheet_values(
-            service, spreadsheet_id, history_range
-        )
-        append_row = 6 + len(existing_history) if existing_history else 6
+        # Determine append position using in-memory history length only
+        append_row = 6 + (len(history) - len(history_new_rows))
         end_append_row = append_row + len(history_new_rows) - 1
         target_history_range = f"{history_sheet}!A{append_row}:E{end_append_row}"
         helpers.write_sheet_value(
