@@ -76,17 +76,6 @@ def run_watcher(
 
     while datetime.now(timezone.utc) < max_end_time:
 
-        if not timing.check_should_continue_run(
-            service,
-            spreadsheet_id,
-            dt_open,
-            dt_start,
-            dt_end,
-            floor_trial_end_buffer_mins,
-        ):
-            break
-
-        time.sleep(1)
         now = time.time()
 
         # Step: Floor Trial Heartbeat
@@ -98,6 +87,15 @@ def run_watcher(
             floor_trials_in_progress = helpers.update_floor_trial_status(
                 service, spreadsheet_id
             )
+            if not timing.check_should_continue_run(
+                service,
+                spreadsheet_id,
+                dt_open,
+                dt_start,
+                dt_end,
+                floor_trial_end_buffer_mins,
+            ):
+                break
             last_step_run["floor_trial_heartbeat"] = now
 
         # Step: Process Submissions
