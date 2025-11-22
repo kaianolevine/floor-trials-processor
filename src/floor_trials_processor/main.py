@@ -26,8 +26,8 @@ from floor_trials_processor.state import SpreadsheetState
 
 STEP_INTERVALS = {
     "floor_trial_heartbeat": 30,
-    "process_submissions": 60,
-    "process_floor_trials": 10,
+    "process_submissions": 20,
+    "process_floor_trials": 20,
     "sync_state": 15,
 }
 
@@ -106,9 +106,7 @@ def run_watcher(
             processing.import_external_submissions(
                 service, st, config.EXTERNAL_SHEET_ID
             )
-            time.sleep(1)
             processing.process_raw_submissions_in_memory(st, dt_open, dt_start, dt_end)
-            time.sleep(1)
             st.visualize()
             last_step_run["process_submissions"] = now
 
@@ -122,7 +120,6 @@ def run_watcher(
                 action_values = helpers.fetch_sheet_values(
                     service, spreadsheet_id, monitor_range
                 )
-                time.sleep(1)
                 processing.process_actions(
                     service=service,
                     spreadsheet_id=spreadsheet_id,
@@ -130,14 +127,9 @@ def run_watcher(
                     current_values=action_values,
                     state=st,
                 )
-                time.sleep(1)
+                st.sync_to_sheets(service, spreadsheet_id)
                 st.visualize()
                 last_step_run["process_floor_trials"] = now
-
-        # Step: Sync State to Sheets
-        elif now - last_step_run["sync_state"] >= STEP_INTERVALS["sync_state"]:
-            st.sync_to_sheets(service, spreadsheet_id)
-            last_step_run["sync_state"] = now
 
         loop_elapsed = time.time() - last_loop_time
         sleep_time = max(0, interval_seconds - loop_elapsed)
