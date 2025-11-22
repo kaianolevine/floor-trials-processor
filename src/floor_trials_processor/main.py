@@ -25,10 +25,10 @@ import floor_trials_processor.timing as timing
 from floor_trials_processor.state import SpreadsheetState
 
 STEP_INTERVALS = {
-    "floor_trial_heartbeat": 10,
-    "process_submissions": 13,
-    "process_floor_trials": 17,
-    "sync_state": 20,
+    "floor_trial_heartbeat": 30,
+    "process_submissions": 60,
+    "process_floor_trials": 10,
+    "sync_state": 15,
 }
 
 
