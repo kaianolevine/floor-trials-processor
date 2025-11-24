@@ -75,15 +75,20 @@ def run_watcher(
 
         now = time.time()
 
+        floor_trials_in_progress = helpers.update_floor_trial_status(
+            service, spreadsheet_id, dt_open, dt_start, dt_end, now
+        )
+        processing.process_raw_submissions_in_memory(
+            st, dt_open, dt_end, max_priority_runs
+        )
+        processing.fill_current_from_queues(st)
+
         # Step: Floor Trial Heartbeat
         if (
             now - last_step_run["floor_trial_heartbeat"]
             >= STEP_INTERVALS["floor_trial_heartbeat"]
         ):
             update_utc_heartbeat(service, spreadsheet_id, current_utc_cell)
-            floor_trials_in_progress = helpers.update_floor_trial_status(
-                service, spreadsheet_id
-            )
             if not timing.check_should_continue_run(
                 service,
                 spreadsheet_id,
@@ -102,9 +107,7 @@ def run_watcher(
             >= STEP_INTERVALS["process_submissions"]
         ):
             processing.import_external_submissions(service, submission_sheet_id, st)
-            processing.process_raw_submissions_in_memory(
-                st, dt_open, dt_end, max_priority_runs
-            )
+
             st.visualize()
             log.info("✅ Process submissions")
             last_step_run["process_submissions"] = now
@@ -115,7 +118,6 @@ def run_watcher(
             >= STEP_INTERVALS["process_floor_trials"]
         ):
             if floor_trials_in_progress:
-                processing.fill_current_from_queues(st)
                 processing.process_actions(
                     service=service,
                     spreadsheet_id=spreadsheet_id,

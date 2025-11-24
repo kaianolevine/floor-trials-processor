@@ -330,59 +330,44 @@ def increment_run_count_in_memory(
         return False
 
 
-def update_floor_trial_status(service, spreadsheet_id):
+def update_floor_trial_status(
+    service, spreadsheet_id, dt_open, dt_start, dt_end, now_utc
+):
     """
-    Update Floor Trial status using UTC datetimes in config-defined cells.
+    Update Floor Trial status using passed-in UTC datetimes.
 
     Args:
         service: Google Sheets API service instance.
         spreadsheet_id (str): Spreadsheet identifier.
+        dt_open (datetime): Open datetime.
+        dt_start (datetime): Start datetime.
+        dt_end (datetime): End datetime.
+        now_utc (datetime): Current datetime in UTC.
 
     Returns:
-        bool: True if status is 'in progress', False otherwise or on error.
+        bool: True if status is 'in progress', False otherwise.
     """
-    try:
-        ranges = [
-            config.FLOOR_OPEN_RANGE,
-            config.FLOOR_START_RANGE,
-            config.FLOOR_END_RANGE,
-        ]
-        result = (
-            service.spreadsheets()
-            .values()
-            .batchGet(spreadsheetId=spreadsheet_id, ranges=ranges)
-            .execute()
-        )
-        open_val = result.get("valueRanges", [])[0].get("values", [])
-        start_val = result.get("valueRanges", [])[1].get("values", [])
-        end_val = result.get("valueRanges", [])[2].get("values", [])
-        open_str = open_val[0][0].strip() if open_val and open_val[0] else ""
-        start_str = start_val[0][0].strip() if start_val and start_val[0] else ""
-        end_str = end_val[0][0].strip() if end_val and end_val[0] else ""
+    if not hasattr(update_floor_trial_status, "last_status"):
+        update_floor_trial_status.last_status = None
+    last_status = update_floor_trial_status.last_status
 
-        dt_open = parse_utc_datetime(open_str)
-        dt_start = parse_utc_datetime(start_str)
-        dt_end = parse_utc_datetime(end_str)
-        now_utc = datetime.now(timezone.utc)
+    status = config.STATUS_NOT_ACTIVE
+    if dt_start and dt_open and dt_end:
+        if dt_start <= now_utc <= dt_end:
+            status = config.STATUS_IN_PROGRESS
+        elif dt_open <= now_utc < dt_start:
+            status = config.STATUS_OPEN
+        elif now_utc > dt_end:
+            status = config.STATUS_NOT_ACTIVE
 
-        log.info(
-            f"✅ update_floor_trial_status: Open={dt_open}, Start={dt_start}, "
-            f"End={dt_end}, Now={now_utc}"
-        )
-
-        status = config.STATUS_NOT_ACTIVE
-        if dt_start and dt_open and dt_end:
-            if dt_start <= now_utc <= dt_end:
-                status = config.STATUS_IN_PROGRESS
-            elif dt_open <= now_utc < dt_start:
-                status = config.STATUS_OPEN
-            elif now_utc > dt_end:
-                status = config.STATUS_NOT_ACTIVE
-
-        # Use write_sheet_value; fallback to direct API call if needed
+    if update_floor_trial_status.last_status != status:
         try:
             write_sheet_value(
                 service, spreadsheet_id, config.FLOOR_STATUS_RANGE, [status, "", ""]
+            )
+            update_floor_trial_status.last_status = status
+            log.info(
+                f"📝 Updated floor trial status: '{status}' (was: '{last_status}')"
             )
         except Exception:
             service.spreadsheets().values().update(
@@ -391,15 +376,14 @@ def update_floor_trial_status(service, spreadsheet_id):
                 valueInputOption="RAW",
                 body={"values": [[status, "", ""]]},
             ).execute()
+            update_floor_trial_status.last_status = status
+            log.info(
+                f"📝 Updated floor trial status with fallback: '{status}' (was: '{last_status}')"
+            )
+    else:
+        log.debug(f"⏩ Status unchanged ('{status}') — no write performed.")
 
-        log.info(f"✅ Updated status: '{status}'")
-        if status == config.STATUS_IN_PROGRESS:
-            return True
-        else:
-            return False
-    except Exception as e:
-        log.error(f"❌ ERROR: update_floor_trial_status exception: {e}", exc_info=True)
-        return False
+    return status == config.STATUS_IN_PROGRESS
 
 
 def get_floor_trial_times(service, spreadsheet_id):
