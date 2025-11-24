@@ -39,7 +39,7 @@ def compact_queue(data: List[List[str]], columns: int = 5) -> List[List[str]]:
 
 
 def import_external_submissions(
-    service, state: state.SpreadsheetState, source_spreadsheet_id: str
+    service, source_spreadsheet_id: str, state: state.SpreadsheetState
 ):
     """
     Imports new submissions from external spreadsheet into in-memory state.
@@ -439,7 +439,7 @@ def process_actions(
 # ---------------------------------------------------------------------
 # New queue processing functions
 # ---------------------------------------------------------------------
-def process_priority(service, spreadsheet_id, state):
+def process_priority(state):
     """
     Read from in-memory Priority queue, find first non-empty row, log and clear, return as 5-cell list or None.
     """
@@ -462,7 +462,7 @@ def process_priority(service, spreadsheet_id, state):
     return None
 
 
-def process_non_priority(service, spreadsheet_id, state):
+def process_non_priority(state):
     """
     Read from in-memory NonPriority queue, find first non-empty row, log and clear, return as 5-cell list or None.
     """
@@ -487,7 +487,7 @@ def process_non_priority(service, spreadsheet_id, state):
     return None
 
 
-def fill_current_from_queues(service, spreadsheet_id, state):
+def fill_current_from_queues(state):
     """
     Fill empty rows in the in-memory Current queue from Priority and NonPriority queues using only SpreadsheetState.
     For each empty row in the current queue:
@@ -522,35 +522,31 @@ def fill_current_from_queues(service, spreadsheet_id, state):
             if any(str(cell).strip() for cell in pq_row):
                 taken_priority = pq_row
                 pq_rows[pq_idx] = [""] * 5
-                log.info(
-                    f"fill_current_from_queues: Taking row {pq_idx+3} from Priority queue: {taken_priority}"
-                )
+                log.info(f"Taking row {pq_idx+3} from Priority queue: {taken_priority}")
                 break
         if taken_priority is not None:
             compacted = compact_queue(pq_rows)
             state.sections["priority_queue"]["data"] = compacted
             state.mark_dirty("priority_queue")
             log.debug(
-                f"fill_current_from_queues: Compacted Priority queue — {len([r for r in compacted if any(str(cell).strip() for cell in r)])} non-empty, {len([r for r in compacted if not any(str(cell).strip() for cell in r)])} empty rows"
+                f"Compacted Priority queue — {len([r for r in compacted if any(str(cell).strip() for cell in r)])} non-empty, {len([r for r in compacted if not any(str(cell).strip() for cell in r)])} empty rows"
             )
             current_data[idx] = normalize_row_length(taken_priority)
             state.mark_dirty("current_queue")
             log.debug(
-                f"fill_current_from_queues: Filled Current queue row {row_num} (cols E–I) from Priority queue: {taken_priority}"
+                f"Filled Current queue row {row_num} (cols E–I) from Priority queue: {taken_priority}"
             )
             changes_made = True
             continue
         # If not Priority, try NonPriority, but only for rows 6–9 (row_num 6,7,8,9)
         if row_num > 9:
             log.debug(
-                f"fill_current_from_queues: Skipping NonPriority for row {row_num} (bottom two slots must be Priority only)."
+                f"Skipping NonPriority for row {row_num} (bottom two slots must be Priority only)."
             )
             log.debug(
-                f"fill_current_from_queues: Only Priority queue may fill Current rows 10 and 11 (row {row_num})."
+                f"Only Priority queue may fill Current rows 10 and 11 (row {row_num})."
             )
-            log.debug(
-                f"fill_current_from_queues: No data available to fill row {row_num}."
-            )
+            log.debug(f"No data available to fill row {row_num}.")
             continue
         npq: List[List[str]] = state.sections["non_priority_queue"]["data"]
         npq_rows = [normalize_row_length(r) for r in npq]
@@ -560,7 +556,7 @@ def fill_current_from_queues(service, spreadsheet_id, state):
                 taken_nonpriority = npq_row
                 npq_rows[npq_idx] = [""] * 5
                 log.debug(
-                    f"fill_current_from_queues: Taking row {npq_idx+3} from NonPriority queue: {taken_nonpriority}"
+                    f"Taking row {npq_idx+3} from NonPriority queue: {taken_nonpriority}"
                 )
                 break
         if taken_nonpriority is not None:
@@ -568,21 +564,21 @@ def fill_current_from_queues(service, spreadsheet_id, state):
             state.sections["non_priority_queue"]["data"] = compacted
             state.mark_dirty("non_priority_queue")
             log.debug(
-                f"fill_current_from_queues: Compacted NonPriority queue — {len([r for r in compacted if any(str(cell).strip() for cell in r)])} non-empty, {len([r for r in compacted if not any(str(cell).strip() for cell in r)])} empty rows"
+                f"Compacted NonPriority queue — {len([r for r in compacted if any(str(cell).strip() for cell in r)])} non-empty, {len([r for r in compacted if not any(str(cell).strip() for cell in r)])} empty rows"
             )
             current_data[idx] = normalize_row_length(taken_nonpriority)
             state.mark_dirty("current_queue")
             log.debug(
-                f"fill_current_from_queues: Filled Current queue row {row_num} (cols E–I) from NonPriority queue: {taken_nonpriority}"
+                f"Filled Current queue row {row_num} (cols E–I) from NonPriority queue: {taken_nonpriority}"
             )
             changes_made = True
             continue
-        log.debug(f"fill_current_from_queues: No data available to fill row {row_num}.")
+        log.debug(f"No data available to fill row {row_num}.")
     if not changes_made:
-        log.debug("fill_current_from_queues: No empty rows filled.")
+        log.debug("No empty rows filled.")
     else:
         log.debug(
-            "fill_current_from_queues: Current queue now starts at column F (E is first column of range); all rows are 5 columns: [E, F, G, H, I]."
+            "Current queue now starts at column F (E is first column of range); all rows are 5 columns: [E, F, G, H, I]."
         )
     return changes_made
 
@@ -592,10 +588,10 @@ def fill_current_from_queues(service, spreadsheet_id, state):
 # ---------------------------------------------------------------------
 def process_raw_submissions_in_memory(
     state: state.SpreadsheetState,
-    dt_open=None,
-    dt_start=None,
-    dt_end=None,
-):
+    dt_open: datetime,
+    dt_end: datetime,
+    max_priority_runs: int = 3,
+) -> None:
     """
     Process raw submissions entirely in memory.
     Moves rows from 'raw_submissions' into 'priority_queue' or 'non_priority_queue'
@@ -603,9 +599,6 @@ def process_raw_submissions_in_memory(
     sections and marks dirty sections for sync.
     """
     log.info("process_raw_submissions_in_memory: Starting processing in-memory")
-
-    # Configurable max number of Priority runs per couple
-    MAX_PRIORITY_RUNS = 3
 
     raw_data: List[List[str]] = state.sections["raw_submissions"]["data"]
     # Build priority_names and all_known_divs from the row-by-row mapping of division and flag
@@ -745,10 +738,10 @@ def process_raw_submissions_in_memory(
                     )
                 except Exception:
                     run_count = 0
-                if run_count >= MAX_PRIORITY_RUNS:
+                if run_count >= max_priority_runs:
                     is_priority = False
                     log.info(
-                        f"Moved {leader}/{follower}/{division} to NonPriority due to run count limit (>= {MAX_PRIORITY_RUNS})."
+                        f"Moved {leader}/{follower}/{division} to NonPriority due to run count limit (>= {max_priority_runs})."
                     )
 
         if is_priority:

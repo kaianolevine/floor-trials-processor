@@ -2,11 +2,27 @@
 SHEET_ID = "1JsWQDnxHis79dHcdlZZlgO1HS5Ldlq8zvLD1FdEwBQ4"
 EXTERNAL_SHEET_ID = "193QJBSQKkW1-c2Z3WHv3o2rbX-zZwn9fnmEACj88cEw"
 
+
+# === New runtime and start delay constants ===
+MAX_RAW_BATCH_SIZE = 20
+MAX_RUN_COUNT_FOR_PRIORITY = 3
+SYNC_INTERVAL_SECONDS = 10
+MAX_RUNTIME_HOURS = 5.25
+MAX_START_DELAY_HOURS = 1.0
+INTERVAL_SECONDS = 10
+DURATION_MINUTES = MAX_RUNTIME_HOURS * 60 * 60  # hours divided into seconds
+
+# === Sheet Names ===
 CURRENT_SHEET = "Current"
 PRIORITY_SHEET = "Priority"
 NON_PRIORITY_SHEET = "NonPriority"
 REPORTS_SHEET = "Reports"
 REJECTED_SHEET = "RejectedSubmissions"
+
+# Status text
+STATUS_NOT_ACTIVE = "Floor Trials - Not Active"
+STATUS_IN_PROGRESS = "Floor Trials - In Progress"
+STATUS_OPEN = "Floor Trials - Open for Check-in"
 
 # Ranges
 CURRENT_QUEUE_RANGE = "Current!E6:I12"
@@ -27,23 +43,8 @@ FLOOR_TRIAL_DATE_CELL = FLOOR_OPEN_RANGE
 FLOOR_TRIAL_START_CELL = FLOOR_START_RANGE
 FLOOR_TRIAL_END_CELL = FLOOR_END_RANGE
 
-MAX_RAW_BATCH_SIZE = 20
-MAX_RUN_COUNT_FOR_PRIORITY = 3
-SYNC_INTERVAL_SECONDS = 10
-
-# === New runtime and start delay constants ===
-MAX_RUNTIME_HOURS = 5.25
-MAX_START_DELAY_HOURS = 1.0
-
-# Status text
-STATUS_NOT_ACTIVE = "Floor Trials - Not Active"
-STATUS_IN_PROGRESS = "Floor Trials - In Progress"
-STATUS_OPEN = "Floor Trials - Open for Check-in"
-
 # Additional sheet/range constants (for backward compatibility)
 SHEET_RANGE = f"{CURRENT_SHEET}!A:Z"
-INTERVAL_SECONDS = 5
-DURATION_MINUTES = 60
 MONITOR_RANGE = f"{CURRENT_SHEET}!C6:C11"
 HISTORY_SHEET_NAME = "History"
 RAW_SUBMISSIONS_RANGE = "RawSubmissions!A4:G"

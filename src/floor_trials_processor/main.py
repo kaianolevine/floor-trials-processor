@@ -36,13 +36,13 @@ def update_utc_heartbeat(service, spreadsheet_id: str, current_utc_cell: str):
     """Update UTC heartbeat cell in the sheet."""
     utc_now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     helpers.write_sheet_value(service, spreadsheet_id, current_utc_cell, utc_now_str)
-    log.debug(
-        f"✅ INFO: Heartbeat updated at {config.CURRENT_UTC_CELL} -> {utc_now_str}"
-    )
+    log.debug(f"✅ INFO: Heartbeat updated at {current_utc_cell} -> {utc_now_str}")
 
 
 def run_watcher(
     spreadsheet_id: str,
+    submission_sheet_id: str,
+    max_priority_runs: int,
     interval_seconds: int,
     duration_minutes: int,
     monitor_range: str,
@@ -103,10 +103,10 @@ def run_watcher(
             now - last_step_run["process_submissions"]
             >= STEP_INTERVALS["process_submissions"]
         ):
-            processing.import_external_submissions(
-                service, st, config.EXTERNAL_SHEET_ID
+            processing.import_external_submissions(service, submission_sheet_id, st)
+            processing.process_raw_submissions_in_memory(
+                st, dt_open, dt_end, max_priority_runs
             )
-            processing.process_raw_submissions_in_memory(st, dt_open, dt_start, dt_end)
             st.visualize()
             last_step_run["process_submissions"] = now
 
@@ -116,7 +116,7 @@ def run_watcher(
             >= STEP_INTERVALS["process_floor_trials"]
         ):
             if floor_trials_in_progress:
-                processing.fill_current_from_queues(service, spreadsheet_id, st)
+                processing.fill_current_from_queues(st)
                 action_values = helpers.fetch_sheet_values(
                     service, spreadsheet_id, monitor_range
                 )
@@ -148,6 +148,8 @@ def main():
     """Main function to start the floor trials processor watcher."""
 
     sheet_id = config.SHEET_ID
+    external_id = config.EXTERNAL_SHEET_ID
+    max_priority_runs = config.MAX_RUN_COUNT_FOR_PRIORITY
     interval_seconds = config.INTERVAL_SECONDS
     duration_minutes = config.DURATION_MINUTES
     monitor_range = config.MONITOR_RANGE
@@ -155,13 +157,21 @@ def main():
 
     log.info("✅ Starting main function.")
     log.info(f"✅ Configuration — SHEET_ID={sheet_id}")
+    log.info(f"✅ Configuration — EXTERNAL_SHEET_ID={external_id}")
+    log.info(f"✅ Configuration — MAX_RUN_COUNT_FOR_PRIORITY={max_priority_runs}")
     log.info(f"✅ Configuration — INTERVAL_SECONDS={interval_seconds}")
     log.info(f"✅ Configuration — DURATION_MINUTES={duration_minutes}")
     log.info(f"✅ Configuration — MONITOR_RANGE={monitor_range}")
     log.info(f"✅ Configuration — CURRENT_UTC_CELL={current_utc_cell}")
 
     run_watcher(
-        sheet_id, interval_seconds, duration_minutes, monitor_range, current_utc_cell
+        sheet_id,
+        external_id,
+        max_priority_runs,
+        interval_seconds,
+        duration_minutes,
+        monitor_range,
+        current_utc_cell,
     )
 
     log.info("✅ Main function complete.")
