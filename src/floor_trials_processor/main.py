@@ -136,8 +136,7 @@ def run_watcher(
 
         loop_elapsed = time.time() - last_loop_time
         sleep_time = max(0, interval_seconds - loop_elapsed)
-        log.debug(f"Sleeping {helpers.format_duration(sleep_time)}.")
-        log.info("✅ Sleeping")
+        log.info(f"✅ Sleeping {helpers.format_duration(sleep_time)}.")
         time.sleep(sleep_time)
         last_loop_time = time.time()
 

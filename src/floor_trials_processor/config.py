@@ -10,7 +10,7 @@ SYNC_INTERVAL_SECONDS = 10
 MAX_RUNTIME_HOURS = 5.25
 MAX_START_DELAY_HOURS = 1.0
 INTERVAL_SECONDS = 10
-DURATION_MINUTES = MAX_RUNTIME_HOURS * 60 * 60  # hours divided into seconds
+DURATION_MINUTES = MAX_RUNTIME_HOURS * 60  # hours divided into minutes
 
 # === Sheet Names ===
 CURRENT_SHEET = "Current"
