@@ -134,8 +134,8 @@ def run_watcher(
                 last_step_run["process_floor_trials"] = now
 
         # loop_elapsed = time.time() - last_loop_time
-        sleep_time = 0  # max(0, interval_seconds - loop_elapsed)
-        log.info(f"✅ Sleeping {helpers.format_duration(sleep_time)}.")
+        # sleep_time = 0  # max(0, interval_seconds - loop_elapsed)
+        # log.info(f"✅ Sleeping {helpers.format_duration(sleep_time)}.")
         # time.sleep(sleep_time)
         # last_loop_time = time.time()
 
