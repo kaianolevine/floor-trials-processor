@@ -469,7 +469,7 @@ def process_raw_submissions_in_memory(
     depending on division mappings. Updates 'report' and 'rejected_submissions'
     sections and marks dirty sections for sync.
     """
-    log.info("process_raw_submissions_in_memory: Starting processing in-memory")
+    log.debug("Starting processing in-memory")
 
     raw_data: List[List[str]] = state.sections["raw_submissions"]["data"]
     # Build priority_names and all_known_divs from the row-by-row mapping of division and flag
@@ -673,7 +673,9 @@ def process_raw_submissions_in_memory(
     ]:
         state.mark_dirty(sec)
 
-    log.info(f"process_raw_submissions_in_memory: Processed {processed} rows in-memory")
+    log.debug(
+        f"process_raw_submissions_in_memory: Processed {processed} rows in-memory"
+    )
 
 
 def increment_report_for_one_run(leader, follower, division, state: SpreadsheetState):

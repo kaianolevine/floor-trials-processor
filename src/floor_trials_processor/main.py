@@ -137,7 +137,14 @@ def run_watcher(
         time.sleep(1)  # Sleep briefly to avoid tight loop
 
     st.sync_to_sheets(service, spreadsheet_id)
-    helpers.update_floor_trial_status(service, spreadsheet_id)
+    helpers.update_floor_trial_status(
+        service,
+        spreadsheet_id,
+        dt_open,
+        dt_start,
+        dt_end,
+        datetime.now(timezone.utc),
+    )
     update_utc_heartbeat(service, spreadsheet_id, current_utc_cell)
 
     log.info("✅ Watcher finished")
