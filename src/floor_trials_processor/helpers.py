@@ -233,7 +233,7 @@ def clean_and_compact_queue(data: List[List[str]], name: str) -> List[List[str]]
     empty = [[""] * 5 for _ in range(len(data) - len(non_empty))]
     compacted = non_empty + empty
     log.info(
-        f"✅ INFO: clean_and_compact_queue: {name} — "
+        f"✅ clean_and_compact_queue: {name} — "
         f"{len(non_empty)} non-empty, {len(empty)} empty rows after cleaning."
     )
     return compacted
@@ -311,7 +311,7 @@ def increment_run_count_in_memory(
                 row[4] = str(count + 1)
                 state.mark_dirty("reports")
                 log.info(
-                    f"✅ INFO: Incremented in-memory run count for "
+                    f"✅ Incremented in-memory run count for "
                     f"{leader_n}/{follower_n}/{division_n} (row {idx+1})"
                 )
                 return True
@@ -366,7 +366,7 @@ def update_floor_trial_status(service, spreadsheet_id):
         now_utc = datetime.now(timezone.utc)
 
         log.info(
-            f"✅ INFO: update_floor_trial_status: Open={dt_open}, Start={dt_start}, "
+            f"✅ update_floor_trial_status: Open={dt_open}, Start={dt_start}, "
             f"End={dt_end}, Now={now_utc}"
         )
 
@@ -440,11 +440,9 @@ def get_floor_trial_times(service, spreadsheet_id):
         dt_start = parse_utc_datetime(start_str)
         dt_end = parse_utc_datetime(end_str)
 
-        log.info(
-            f"✅ INFO: get_floor_trial_times: Open={dt_open}, Start={dt_start}, End={dt_end}"
-        )
+        log.info(f"✅ Open={dt_open}, Start={dt_start}, End={dt_end}")
 
         return {"open": dt_open, "start": dt_start, "end": dt_end}
     except Exception as e:
-        log.error(f"❌ ERROR: get_floor_trial_times exception: {e}", exc_info=True)
+        log.error(f"❌ exception: {e}", exc_info=True)
         return {"open": None, "start": None, "end": None}

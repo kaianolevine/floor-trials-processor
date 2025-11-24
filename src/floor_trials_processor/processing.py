@@ -1,7 +1,7 @@
 import copy
 import re
 from datetime import datetime, timezone
-from typing import Any, List, Optional
+from typing import Any, List
 
 from kaiano_common_utils import google_sheets as sheets
 from kaiano_common_utils import logger as log
@@ -139,22 +139,6 @@ def import_external_submissions(
         log.error(f"import_external_submissions: Error occurred: {e}", exc_info=True)
 
 
-def detect_changes(
-    previous: Optional[List[List[Any]]], current: List[List[Any]]
-) -> bool:
-    log.debug(
-        f"Detecting changes: previous length = {len(previous) if previous else 'None'}, current length = {len(current)}"
-    )
-    # Example simple logic; can be improved.
-    if previous is None:
-        log.debug("No previous data, no changes detected.")
-        return False
-    # You can integrate deeper util from common-utils here (e.g., diff util)
-    changed = previous != current
-    log.debug(f"Change detected: {changed}")
-    return changed
-
-
 def process_actions(
     service,
     spreadsheet_id: str,
@@ -180,7 +164,6 @@ def process_actions(
         current_values: The current values read from the monitor_range (list of lists, 1 cell per row).
         state: The SpreadsheetState object for in-memory helpers.
     """
-    log.info("Detected change — starting processing ...")
 
     # --- Range Parsing ---
     def parse_range(range_str: str):
@@ -430,7 +413,7 @@ def process_actions(
     )
     log.debug("Cleared processed commands from monitored action range after handling.")
 
-    log.info("Processing complete.")
+    log.debug("Processing Actions complete.")
 
 
 # ---------------------------------------------------------------------
