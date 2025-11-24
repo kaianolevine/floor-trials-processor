@@ -116,14 +116,10 @@ def run_watcher(
         ):
             if floor_trials_in_progress:
                 processing.fill_current_from_queues(st)
-                action_values = helpers.fetch_sheet_values(
-                    service, spreadsheet_id, monitor_range
-                )
                 processing.process_actions(
                     service=service,
                     spreadsheet_id=spreadsheet_id,
                     monitor_range=monitor_range,
-                    current_values=action_values,
                     state=st,
                 )
                 st.sync_to_sheets(service, spreadsheet_id)
@@ -151,7 +147,7 @@ def main():
     monitor_range = config.MONITOR_RANGE
     current_utc_cell = config.CURRENT_UTC_CELL
 
-    log.info("✅ Starting main function.")
+    log.info("✅ Starting Floor Trials Processor")
     log.info(f"✅ Configuration — SHEET_ID={sheet_id}")
     log.info(f"✅ Configuration — EXTERNAL_SHEET_ID={external_id}")
     log.info(f"✅ Configuration — MAX_RUN_COUNT_FOR_PRIORITY={max_priority_runs}")

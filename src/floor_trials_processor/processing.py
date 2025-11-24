@@ -1,7 +1,6 @@
 import copy
-import re
 from datetime import datetime, timezone
-from typing import Any, List
+from typing import List
 
 from kaiano_common_utils import google_sheets as sheets
 from kaiano_common_utils import logger as log
@@ -143,7 +142,6 @@ def process_actions(
     service,
     spreadsheet_id: str,
     monitor_range: str,
-    current_values: List[List[Any]],
     state: "SpreadsheetState",
 ):
     """
@@ -165,104 +163,10 @@ def process_actions(
         state: The SpreadsheetState object for in-memory helpers.
     """
 
-    # --- Range Parsing ---
-    def parse_range(range_str: str):
-        """Parse a range string like 'Sheet!C6:C11' or 'Sheet!AA10:AB15'.
-        Returns (sheet, start_col, start_row, end_col, end_row), all as strings except rows as ints.
-        Supports multi-letter columns.
-        """
-        m = re.match(r"([^!]+)!([A-Z]+)(\d+):([A-Z]+)(\d+)", range_str, re.I)
-        if not m:
-            # Try single-cell "Sheet!C6"
-            m2 = re.match(r"([^!]+)!([A-Z]+)(\d+)", range_str, re.I)
-            if m2:
-                return (
-                    m2.group(1),
-                    m2.group(2).upper(),
-                    int(m2.group(3)),
-                    m2.group(2).upper(),
-                    int(m2.group(3)),
-                )
-            return None
-        return (
-            m.group(1),
-            m.group(2).upper(),
-            int(m.group(3)),
-            m.group(4).upper(),
-            int(m.group(5)),
-        )
-
-    # --- Range Constants from config ---
-    (
-        monitor_sheet,
-        monitor_start_col,
-        monitor_start_row,
-        monitor_end_col,
-        monitor_end_row,
-    ) = (None, None, None, None, None)
-    parsed = parse_range(monitor_range)
-    if not parsed:
-        log.error(f"Unable to parse monitor_range: {monitor_range}")
-        return
-    (
-        monitor_sheet,
-        monitor_start_col,
-        monitor_start_row,
-        monitor_end_col,
-        monitor_end_row,
-    ) = parsed
-    log.debug(
-        f"Processing changes on sheet '{monitor_sheet}', rows {monitor_start_row} to {monitor_end_row}, columns {monitor_start_col}-{monitor_end_col}"
-    )
-
-    # Use config for allowed ranges
-    allowed_monitor_col = getattr(config, "MONITOR_COL", "C")
-    allowed_monitor_rows = (
-        range(int(config.MONITOR_ROW_START), int(config.MONITOR_ROW_END) + 1)
-        if hasattr(config, "MONITOR_ROW_START") and hasattr(config, "MONITOR_ROW_END")
-        else range(6, 12)
-    )
-    allowed_data_cols = getattr(config, "DATA_COLS", ["E", "F", "G", "H", "I"])
-    allowed_data_rows = range(
-        int(getattr(config, "DATA_ROW_START", 5)),
-        int(getattr(config, "DATA_ROW_END", 12)) + 1,
-    )
+    # --- Sheet Value Fetch ---
+    current_values = helpers.fetch_sheet_values(service, spreadsheet_id, monitor_range)
     compaction_range = getattr(config, "COMPACTION_RANGE", "Current!E5:I12")
     history_sheet = getattr(config, "HISTORY_SHEET_NAME", "History")
-
-    # --- Range Validation Helper ---
-    def col_to_index(col: str) -> int:
-        """Convert column letters (e.g. 'A', 'AA') to 0-based index."""
-        col = col.upper()
-        idx = 0
-        for c in col:
-            idx = idx * 26 + (ord(c) - ord("A") + 1)
-        return idx - 1
-
-    def can_modify_range(range_str: str) -> bool:
-        """Check if a range is allowed for modification."""
-        parsed_inner = parse_range(range_str)
-        if not parsed_inner:
-            return False
-        sheet, start_col, start_row, end_col, end_row = parsed_inner
-        if sheet != "Current":
-            return True
-        for col_idx in range(col_to_index(start_col), col_to_index(end_col) + 1):
-            col_letter = ""
-            n = col_idx + 1
-            # Convert index to letters
-            while n > 0:
-                n, rem = divmod(n - 1, 26)
-                col_letter = chr(rem + ord("A")) + col_letter
-            for row in range(start_row, end_row + 1):
-                if not (
-                    (col_letter == allowed_monitor_col and row in allowed_monitor_rows)
-                    or (col_letter in allowed_data_cols and row in allowed_data_rows)
-                ):
-                    return False
-        return True
-
-    # --- Sheet Existence ---
     sheets.ensure_sheet_exists(service, spreadsheet_id, history_sheet)
 
     # --- Unified In-Memory Action Processing ---
@@ -292,7 +196,7 @@ def process_actions(
     for idx, row in enumerate(current_values):
         action = row[0].strip() if row and len(row) > 0 else ""
         action_lc = action.lower()
-        row_num = monitor_start_row + idx
+        row_num = idx
 
         if action_lc == "o":
             # Move row to history (in memory) and clear from current_queue
@@ -304,12 +208,9 @@ def process_actions(
                 )
                 history.append(new_history_row)
                 history_new_rows.append(new_history_row)
-
-                # ⬇️ This is the call you asked for
                 increment_report_for_one_run(
                     queue_row[1], queue_row[2], queue_row[3], state
                 )
-
                 log.debug(
                     f"O-action debug: Updated reports after new history row. "
                     f"history_new_rows_count={len(history_new_rows)}, "
@@ -363,26 +264,16 @@ def process_actions(
 
     # --- Sheet: Write current queue snapshot from memory into compaction_range ---
     compaction_data = [normalize_row_length(row, 5) for row in compacted]
-    total_rows = len(compaction_data)
-    if can_modify_range(compaction_range):
-        comp_sheet, comp_start_col, comp_start_row, comp_end_col, comp_end_row = (
-            parse_range(compaction_range)
-        )
-        target_range = f"{comp_sheet}!{comp_start_col}{comp_start_row}:{comp_end_col}{comp_start_row + total_rows - 1}"
-        helpers.write_sheet_value(
-            service,
-            spreadsheet_id,
-            target_range,
-            compaction_data,
-            value_input_option="RAW",
-        )
-        log.debug(
-            f"Wrote {total_rows} rows of current queue to {target_range} from in-memory state."
-        )
-    else:
-        log.warning(
-            f"Compaction range {compaction_range} is not allowed to modify; skipping sheet queue update."
-        )
+    helpers.write_sheet_value(
+        service,
+        spreadsheet_id,
+        compaction_range,
+        compaction_data,
+        value_input_option="RAW",
+    )
+    log.debug(
+        f"Wrote {len(compaction_data)} rows of current queue to {compaction_range} from in-memory state."
+    )
 
     # --- Sheet: Append new history rows based on in-memory history_new_rows ---
     if history_new_rows:
