@@ -76,7 +76,12 @@ def run_watcher(
         now = time.time()
 
         floor_trials_in_progress = helpers.update_floor_trial_status(
-            service, spreadsheet_id, dt_open, dt_start, dt_end, now
+            service,
+            spreadsheet_id,
+            dt_open,
+            dt_start,
+            dt_end,
+            datetime.now(timezone.utc),
         )
         processing.process_raw_submissions_in_memory(
             st, dt_open, dt_end, max_priority_runs
