@@ -332,9 +332,7 @@ def process_actions(
                     f"history_new_rows_count={len(history_new_rows)}, "
                     f"total_report_rows={len(state.sections['reports']['data'])}"
                 )
-                log.info(
-                    f"process_actions: 'O' at row {row_num} – moved to history in-memory: {new_history_row}"
-                )
+                log.info(f"'O' at row {row_num} – moved to history: {new_history_row}")
             current_queue[idx] = [""] * 5
             cleared_action_values[idx][0] = ""
 
@@ -342,9 +340,7 @@ def process_actions(
             # Clear the row in current_queue (in memory only)
             current_queue[idx] = [""] * 5
             cleared_action_values[idx][0] = ""
-            log.info(
-                f"process_actions: 'X' at row {row_num} – cleared current queue row in memory."
-            )
+            log.info(f"'X' at row {row_num} – cleared current queue row.")
 
         elif action_lc == "-":
             queue_row = copy.deepcopy(current_queue[idx])
@@ -352,12 +348,13 @@ def process_actions(
                 deferred_minus_rows.append(normalize_row_length(queue_row))
             current_queue[idx] = [""] * 5
             cleared_action_values[idx][0] = ""
+            log.info(f"'-' at row {row_num} – cleared current queue row.")
 
         elif action_lc != "":
             # Unrecognized: clear monitored cell later when we write cleared_action_values
             cleared_action_values[idx][0] = ""
             log.warning(
-                f"process_actions: Unrecognized action '{action}' at row {row_num}; clearing command only."
+                f"Unrecognized action '{action}' at row {row_num}; clearing command only."
             )
         # else: empty cell, nothing to do
 
@@ -396,12 +393,12 @@ def process_actions(
             compaction_data,
             value_input_option="RAW",
         )
-        log.info(
-            f"process_actions: Wrote {total_rows} rows of current queue to {target_range} from in-memory state."
+        log.debug(
+            f"Wrote {total_rows} rows of current queue to {target_range} from in-memory state."
         )
     else:
         log.warning(
-            f"process_actions: Compaction range {compaction_range} is not allowed to modify; skipping sheet queue update."
+            f"Compaction range {compaction_range} is not allowed to modify; skipping sheet queue update."
         )
 
     # --- Sheet: Append new history rows based on in-memory history_new_rows ---
@@ -418,10 +415,10 @@ def process_actions(
             value_input_option="RAW",
         )
         log.info(
-            f"process_actions: Appended {len(history_new_rows)} new history row(s) to {target_history_range}."
+            f"Appended {len(history_new_rows)} new history row(s) to {target_history_range}."
         )
     else:
-        log.info("process_actions: No 'O' actions – no new history rows to append.")
+        log.debug("No 'O' actions – no new history rows to append.")
 
     # --- Write cleared actions back to Google Sheets after processing (always RAW) ---
     helpers.write_sheet_value(
@@ -431,7 +428,7 @@ def process_actions(
         cleared_action_values,
         value_input_option="RAW",
     )
-    log.info("Cleared processed commands from monitored action range after handling.")
+    log.debug("Cleared processed commands from monitored action range after handling.")
 
     log.info("Processing complete.")
 

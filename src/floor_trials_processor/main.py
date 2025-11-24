@@ -96,6 +96,7 @@ def run_watcher(
                 floor_trial_end_buffer_mins,
             ):
                 break
+            log.info("✅ Floor trials heartbeat")
             last_step_run["floor_trial_heartbeat"] = now
 
         # Step: Process Submissions
@@ -108,6 +109,7 @@ def run_watcher(
                 st, dt_open, dt_end, max_priority_runs
             )
             st.visualize()
+            log.info("✅ Process submissions")
             last_step_run["process_submissions"] = now
 
         # Step: Floor Trials Processing
@@ -129,11 +131,13 @@ def run_watcher(
                 )
                 st.sync_to_sheets(service, spreadsheet_id)
                 st.visualize()
+                log.info("✅ Process floor trials actions")
                 last_step_run["process_floor_trials"] = now
 
         loop_elapsed = time.time() - last_loop_time
         sleep_time = max(0, interval_seconds - loop_elapsed)
         log.debug(f"Sleeping {helpers.format_duration(sleep_time)}.")
+        log.info("✅ Sleeping")
         time.sleep(sleep_time)
         last_loop_time = time.time()
 
