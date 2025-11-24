@@ -71,8 +71,6 @@ def run_watcher(
 
     last_step_run = {step: 0 for step in STEP_INTERVALS}
 
-    # last_loop_time = time.time()
-
     while datetime.now(timezone.utc) < max_end_time:
 
         now = time.time()
@@ -133,11 +131,7 @@ def run_watcher(
                 log.info("✅ Process floor trials actions")
                 last_step_run["process_floor_trials"] = now
 
-        # loop_elapsed = time.time() - last_loop_time
-        # sleep_time = 0  # max(0, interval_seconds - loop_elapsed)
-        # log.info(f"✅ Sleeping {helpers.format_duration(sleep_time)}.")
-        # time.sleep(sleep_time)
-        # last_loop_time = time.time()
+        time.sleep(1)  # Sleep briefly to avoid tight loop
 
     st.sync_to_sheets(service, spreadsheet_id)
     helpers.update_floor_trial_status(service, spreadsheet_id)

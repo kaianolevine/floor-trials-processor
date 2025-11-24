@@ -125,7 +125,7 @@ def check_should_continue_run(
             service, spreadsheet_id, control_cell
         )
         h2_val = h2_value_rows[0][0] if h2_value_rows and h2_value_rows[0] else ""
-        log.info(f"🔍 {control_cell} value fetched: '{h2_val}'")
+        log.debug(f"🔍 {control_cell} value fetched: '{h2_val}'")
         if str(h2_val).strip().lower() != "runautomations":
             log.warning(
                 f"⚠️ Automation disabled (value was '{h2_val}') — stopping watcher."
