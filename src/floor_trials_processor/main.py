@@ -42,7 +42,6 @@ def run_watcher(
     spreadsheet_id: str,
     submission_sheet_id: str,
     max_priority_runs: int,
-    interval_seconds: int,
     duration_minutes: int,
     monitor_range: str,
     current_utc_cell: str,
@@ -158,7 +157,6 @@ def main():
     sheet_id = config.SHEET_ID
     external_id = config.EXTERNAL_SHEET_ID
     max_priority_runs = config.MAX_RUN_COUNT_FOR_PRIORITY
-    interval_seconds = config.INTERVAL_SECONDS
     duration_minutes = config.DURATION_MINUTES
     monitor_range = config.MONITOR_RANGE
     current_utc_cell = config.CURRENT_UTC_CELL
@@ -167,7 +165,6 @@ def main():
     log.info(f"✅ Configuration — SHEET_ID={sheet_id}")
     log.info(f"✅ Configuration — EXTERNAL_SHEET_ID={external_id}")
     log.info(f"✅ Configuration — MAX_RUN_COUNT_FOR_PRIORITY={max_priority_runs}")
-    log.info(f"✅ Configuration — INTERVAL_SECONDS={interval_seconds}")
     log.info(f"✅ Configuration — DURATION_MINUTES={duration_minutes}")
     log.info(f"✅ Configuration — MONITOR_RANGE={monitor_range}")
     log.info(f"✅ Configuration — CURRENT_UTC_CELL={current_utc_cell}")
@@ -176,7 +173,6 @@ def main():
         sheet_id,
         external_id,
         max_priority_runs,
-        interval_seconds,
         duration_minutes,
         monitor_range,
         current_utc_cell,
