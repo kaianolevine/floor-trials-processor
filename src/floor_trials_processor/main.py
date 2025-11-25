@@ -28,7 +28,6 @@ STEP_INTERVALS = {
     "floor_trial_heartbeat": 25,
     "process_submissions": 60,
     "process_floor_trials": 15,
-    "sync_state": 60,
 }
 
 
@@ -36,13 +35,13 @@ def update_utc_heartbeat(service, spreadsheet_id: str, current_utc_cell: str):
     """Update UTC heartbeat cell in the sheet."""
     utc_now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     helpers.write_sheet_value(service, spreadsheet_id, current_utc_cell, utc_now_str)
-    log.debug(
-        f"✅ INFO: Heartbeat updated at {config.CURRENT_UTC_CELL} -> {utc_now_str}"
-    )
+    log.debug(f"✅ INFO: Heartbeat updated at {current_utc_cell} -> {utc_now_str}")
 
 
 def run_watcher(
     spreadsheet_id: str,
+    submission_sheet_id: str,
+    max_priority_runs: int,
     interval_seconds: int,
     duration_minutes: int,
     monitor_range: str,
@@ -72,11 +71,22 @@ def run_watcher(
 
     last_step_run = {step: 0 for step in STEP_INTERVALS}
 
-    last_loop_time = time.time()
-
     while datetime.now(timezone.utc) < max_end_time:
 
         now = time.time()
+
+        floor_trials_in_progress = helpers.update_floor_trial_status(
+            service,
+            spreadsheet_id,
+            dt_open,
+            dt_start,
+            dt_end,
+            datetime.now(timezone.utc),
+        )
+        processing.process_raw_submissions_in_memory(
+            st, dt_open, dt_end, max_priority_runs
+        )
+        processing.fill_current_from_queues(st)
 
         # Step: Floor Trial Heartbeat
         if (
@@ -84,9 +94,6 @@ def run_watcher(
             >= STEP_INTERVALS["floor_trial_heartbeat"]
         ):
             update_utc_heartbeat(service, spreadsheet_id, current_utc_cell)
-            floor_trials_in_progress = helpers.update_floor_trial_status(
-                service, spreadsheet_id
-            )
             if not timing.check_should_continue_run(
                 service,
                 spreadsheet_id,
@@ -96,6 +103,7 @@ def run_watcher(
                 floor_trial_end_buffer_mins,
             ):
                 break
+            log.info("✅ Floor trials heartbeat")
             last_step_run["floor_trial_heartbeat"] = now
 
         # Step: Process Submissions
@@ -103,11 +111,10 @@ def run_watcher(
             now - last_step_run["process_submissions"]
             >= STEP_INTERVALS["process_submissions"]
         ):
-            processing.import_external_submissions(
-                service, st, config.EXTERNAL_SHEET_ID
-            )
-            processing.process_raw_submissions_in_memory(st, dt_open, dt_start, dt_end)
+            processing.import_external_submissions(service, submission_sheet_id, st)
+
             st.visualize()
+            log.info("✅ Process submissions")
             last_step_run["process_submissions"] = now
 
         # Step: Floor Trials Processing
@@ -116,29 +123,28 @@ def run_watcher(
             >= STEP_INTERVALS["process_floor_trials"]
         ):
             if floor_trials_in_progress:
-                processing.fill_current_from_queues(service, spreadsheet_id, st)
-                action_values = helpers.fetch_sheet_values(
-                    service, spreadsheet_id, monitor_range
-                )
                 processing.process_actions(
                     service=service,
                     spreadsheet_id=spreadsheet_id,
                     monitor_range=monitor_range,
-                    current_values=action_values,
                     state=st,
                 )
                 st.sync_to_sheets(service, spreadsheet_id)
                 st.visualize()
+                log.info("✅ Process floor trials actions")
                 last_step_run["process_floor_trials"] = now
 
-        loop_elapsed = time.time() - last_loop_time
-        sleep_time = max(0, interval_seconds - loop_elapsed)
-        log.debug(f"Sleeping {helpers.format_duration(sleep_time)}.")
-        time.sleep(sleep_time)
-        last_loop_time = time.time()
+        time.sleep(1)  # Sleep briefly to avoid tight loop
 
     st.sync_to_sheets(service, spreadsheet_id)
-    helpers.update_floor_trial_status(service, spreadsheet_id)
+    helpers.update_floor_trial_status(
+        service,
+        spreadsheet_id,
+        dt_open,
+        dt_start,
+        dt_end,
+        datetime.now(timezone.utc),
+    )
     update_utc_heartbeat(service, spreadsheet_id, current_utc_cell)
 
     log.info("✅ Watcher finished")
@@ -148,20 +154,30 @@ def main():
     """Main function to start the floor trials processor watcher."""
 
     sheet_id = config.SHEET_ID
+    external_id = config.EXTERNAL_SHEET_ID
+    max_priority_runs = config.MAX_RUN_COUNT_FOR_PRIORITY
     interval_seconds = config.INTERVAL_SECONDS
     duration_minutes = config.DURATION_MINUTES
     monitor_range = config.MONITOR_RANGE
     current_utc_cell = config.CURRENT_UTC_CELL
 
-    log.info("✅ Starting main function.")
+    log.info("✅ Starting Floor Trials Processor")
     log.info(f"✅ Configuration — SHEET_ID={sheet_id}")
+    log.info(f"✅ Configuration — EXTERNAL_SHEET_ID={external_id}")
+    log.info(f"✅ Configuration — MAX_RUN_COUNT_FOR_PRIORITY={max_priority_runs}")
     log.info(f"✅ Configuration — INTERVAL_SECONDS={interval_seconds}")
     log.info(f"✅ Configuration — DURATION_MINUTES={duration_minutes}")
     log.info(f"✅ Configuration — MONITOR_RANGE={monitor_range}")
     log.info(f"✅ Configuration — CURRENT_UTC_CELL={current_utc_cell}")
 
     run_watcher(
-        sheet_id, interval_seconds, duration_minutes, monitor_range, current_utc_cell
+        sheet_id,
+        external_id,
+        max_priority_runs,
+        interval_seconds,
+        duration_minutes,
+        monitor_range,
+        current_utc_cell,
     )
 
     log.info("✅ Main function complete.")

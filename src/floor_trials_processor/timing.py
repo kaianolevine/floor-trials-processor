@@ -43,9 +43,7 @@ def should_start_run(service, spreadsheet_id) -> bool:
                 continue
 
     if not dt_start:
-        log.warning(
-            "⚠️ WARNING: No valid floor trial start time found — exiting gracefully."
-        )
+        log.warning("⚠️ No valid floor trial start time found — exiting gracefully.")
         return False
 
     now_utc = datetime.now(timezone.utc)
@@ -62,11 +60,11 @@ def should_start_run(service, spreadsheet_id) -> bool:
     else:
         if not start_within_delay:
             log.info(
-                f"✅ INFO: Floor trial starts at {dt_start} (more than {config.MAX_START_DELAY_HOURS} hours away) — exiting early."
+                f"✅ Floor trial starts at {dt_start} (more than {config.MAX_START_DELAY_HOURS} hours away) — exiting early."
             )
         if dt_end and not end_within_runtime:
             log.info(
-                f"✅ INFO: Floor trial ends at {dt_end} (more than {config.MAX_RUNTIME_HOURS} hours away) — exiting early."
+                f"✅ Floor trial ends at {dt_end} (more than {config.MAX_RUNTIME_HOURS} hours away) — exiting early."
             )
         return False
 
@@ -88,12 +86,12 @@ def check_should_continue_run(
 
     # Stop immediately if floor trial cannot start or continue
     if not should_start_run(service, spreadsheet_id):
-        log.info("⛔ No active or upcoming floor trial — stopping watcher.")
+        log.debug("⛔ No active or upcoming floor trial — stopping watcher.")
         return False
 
     # Stop if past end time + safety buffer
     if dt_end and now_utc > (dt_end + timedelta(minutes=floor_trial_end_buffer_mins)):
-        log.info(
+        log.debug(
             f"⛔ Past floor trial end + buffer "
             f"({dt_end} + {floor_trial_end_buffer_mins}min) — stopping watcher."
         )
@@ -103,7 +101,7 @@ def check_should_continue_run(
     one_hour_before_open = dt_open - timedelta(hours=1) if dt_open else None
 
     if one_hour_before_open and now_utc < one_hour_before_open:
-        log.info(
+        log.debug(
             f"⏸️ Not yet close enough to open — "
             f"now={now_utc}, earliest run={one_hour_before_open}"
         )
@@ -114,7 +112,7 @@ def check_should_continue_run(
         and now_utc < dt_start
         and (not one_hour_before_open or now_utc < one_hour_before_open)
     ):
-        log.info(
+        log.debug(
             f"⏸️ Before trial start and not near open window — "
             f"now={now_utc}, start={dt_start}"
         )
@@ -127,7 +125,7 @@ def check_should_continue_run(
             service, spreadsheet_id, control_cell
         )
         h2_val = h2_value_rows[0][0] if h2_value_rows and h2_value_rows[0] else ""
-        log.info(f"🔍 {control_cell} value fetched: '{h2_val}'")
+        log.debug(f"🔍 {control_cell} value fetched: '{h2_val}'")
         if str(h2_val).strip().lower() != "runautomations":
             log.warning(
                 f"⚠️ Automation disabled (value was '{h2_val}') — stopping watcher."

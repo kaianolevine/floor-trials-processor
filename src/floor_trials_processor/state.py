@@ -139,7 +139,7 @@ class SpreadsheetState:
                     valueInputOption="RAW",
                     body={"values": data},
                 ).execute()
-                log.info(
+                log.debug(
                     f"✅ INFO: Synced section '{name}' to range '{rng}' with {len(data)} rows."
                 )
             except Exception as e:
