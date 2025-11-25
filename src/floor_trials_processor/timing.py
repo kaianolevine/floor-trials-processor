@@ -7,213 +7,87 @@ import floor_trials_processor.config as config
 import floor_trials_processor.helpers as helpers
 
 
-# ---------------------------------------------------------------------
-# Helper: Check if next floor trial is within MAX_START_DELAY_HOURS
-# ---------------------------------------------------------------------
-def should_start_run(service, spreadsheet_id) -> bool:
+def check_sheet_should_run(service, spreadsheet_id):
     """
-    Determine if the next floor trial start time is within the allowed delay window.
-
-    Returns False if the start time is more than MAX_START_DELAY_HOURS away.
-    """
-    start_str = helpers.get_single_cell(
-        service, spreadsheet_id, config.FLOOR_OPEN_RANGE
-    )
-    dt_start = None
-    if start_str:
-        for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
-            try:
-                dt_start = datetime.strptime(start_str.strip(), fmt).replace(
-                    tzinfo=timezone.utc
-                )
-                break
-            except Exception:
-                continue
-
-    end_str = helpers.get_single_cell(service, spreadsheet_id, config.FLOOR_END_RANGE)
-    dt_end = None
-    if end_str:
-        for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
-            try:
-                dt_end = datetime.strptime(end_str.strip(), fmt).replace(
-                    tzinfo=timezone.utc
-                )
-                break
-            except Exception:
-                continue
-
-    if not dt_start:
-        log.warning("⚠️ No valid floor trial start time found — exiting gracefully.")
-        return False
-
-    now_utc = datetime.now(timezone.utc)
-
-    start_within_delay = dt_start <= now_utc + timedelta(
-        hours=config.MAX_START_DELAY_HOURS
-    )
-    end_within_runtime = dt_end is not None and dt_end <= now_utc + timedelta(
-        hours=config.MAX_RUNTIME_HOURS
-    )
-
-    if start_within_delay or end_within_runtime:
-        return True
-    else:
-        if not start_within_delay:
-            log.info(
-                f"✅ Floor trial starts at {dt_start} (more than {config.MAX_START_DELAY_HOURS} hours away) — exiting early."
-            )
-        if dt_end and not end_within_runtime:
-            log.info(
-                f"✅ Floor trial ends at {dt_end} (more than {config.MAX_RUNTIME_HOURS} hours away) — exiting early."
-            )
-        return False
-
-
-def check_should_continue_run(
-    service,
-    spreadsheet_id,
-    dt_open,
-    dt_start,
-    dt_end,
-    floor_trial_end_buffer_mins,
-):
-    """
-    Determines if the watcher should continue running based on
-    the current time relative to event times and automation control signal.
+    Determines if automation should run based on control cell value in the sheet.
     """
 
-    now_utc = datetime.now(timezone.utc)
-
-    # Stop immediately if floor trial cannot start or continue
-    if not should_start_run(service, spreadsheet_id):
-        log.debug("⛔ No active or upcoming floor trial — stopping watcher.")
-        return False
-
-    # Stop if past end time + safety buffer
-    if dt_end and now_utc > (dt_end + timedelta(minutes=floor_trial_end_buffer_mins)):
-        log.debug(
-            f"⛔ Past floor trial end + buffer "
-            f"({dt_end} + {floor_trial_end_buffer_mins}min) — stopping watcher."
-        )
-        return False
-
-    # Only run if we are close enough to opening OR after start time
-    one_hour_before_open = dt_open - timedelta(hours=1) if dt_open else None
-
-    if one_hour_before_open and now_utc < one_hour_before_open:
-        log.debug(
-            f"⏸️ Not yet close enough to open — "
-            f"now={now_utc}, earliest run={one_hour_before_open}"
-        )
-        return False
-
-    if (
-        dt_start
-        and now_utc < dt_start
-        and (not one_hour_before_open or now_utc < one_hour_before_open)
-    ):
-        log.debug(
-            f"⏸️ Before trial start and not near open window — "
-            f"now={now_utc}, start={dt_start}"
-        )
-        return False
-
-    # Stop if automation control disabled
     control_cell = config.AUTOMATION_CONTROL_CELL
     try:
-        h2_value_rows = helpers.fetch_sheet_values(
-            service, spreadsheet_id, control_cell
-        )
-        h2_val = h2_value_rows[0][0] if h2_value_rows and h2_value_rows[0] else ""
-        log.debug(f"🔍 {control_cell} value fetched: '{h2_val}'")
-        if str(h2_val).strip().lower() != "runautomations":
-            log.warning(
-                f"⚠️ Automation disabled (value was '{h2_val}') — stopping watcher."
-            )
+        value = helpers.get_single_cell(service, spreadsheet_id, control_cell)
+        if str(value).strip().lower() != "runautomations":
+            log.warning(f"⚠️ Automation disabled (cell={control_cell}, val='{value}')")
             return False
     except Exception as e:
-        log.error(
-            f"❌ ERROR: Failed to read automation control cell: {e}",
-            exc_info=True,
-        )
-        log.warning("⚠️ Exiting watcher due to control-cell read failure.")
+        log.error(f"❌ Control cell read failure: {e}", exc_info=True)
         return False
+
+    # Control cell explicitly allows automation
+    return True
+
+
+def should_run(
+    now_utc: datetime,
+    dt_open: datetime,
+    dt_end: datetime,
+    start_time: datetime,
+    max_duration_minutes: int,
+    max_start_delay_hours: float = config.EARLY_WINDOW_RUNNING_BUFFER,
+    end_buffer_minutes: int = config.FLOOR_END_BUFFER,
+) -> bool:
+    """
+    Return True if the watcher should currently be running based on the allowed window relative to open and end times.
+
+    Logic: True if time is within [open - MAX_START_DELAY_HOURS, end + FLOOR_END_BUFFER_MIN]
+    """
+
+    earliest_allowed = dt_open - timedelta(hours=max_start_delay_hours)
+    latest_allowed = dt_end + timedelta(minutes=end_buffer_minutes)
+
+    # Too early — before allowed window
+    if now_utc < earliest_allowed:
+        log.debug(f"⏸️ Too early: now={now_utc}, earliest allowed={earliest_allowed}")
+        return False
+
+    # Too late — outside allowed window
+    if now_utc > latest_allowed:
+        log.debug(
+            f"🏁 Past allowed run window: now={now_utc}, latest allowed={latest_allowed}"
+        )
+        return False
+
+    # Exceeded maximum allowed duration — stop running
+    if start_time and max_duration_minutes:
+        elapsed = now_utc - start_time
+        if elapsed > timedelta(minutes=max_duration_minutes):
+            log.debug(
+                f"🕒 Max duration exceeded: elapsed={elapsed}, allowed={max_duration_minutes} minutes"
+            )
+            return False
 
     return True
 
 
-def verify_utc_timing(service, sheet_id) -> Optional[dict]:
+def floor_trial_active(
+    now_utc: datetime,
+    dt_open: datetime,
+    dt_end: datetime,
+) -> bool:
     """
-    Log UTC-based diagnostics for the Floor Trial schedule and update status.
+    Return True if we are between dt_open and dt_end (strict active window).
 
-    Returns a dictionary with timing details and status, or None on error.
+    This version does NOT allow early or extended automation — only true active window.
     """
-    try:
-        ranges = [
-            config.FLOOR_TRIAL_DATE_CELL,
-            config.FLOOR_TRIAL_START_CELL,
-            config.FLOOR_TRIAL_END_CELL,
-        ]
-        result = (
-            service.spreadsheets()
-            .values()
-            .batchGet(spreadsheetId=sheet_id, ranges=ranges)
-            .execute()
-        )
-        date_val = result["valueRanges"][0].get("values", [[""]])[0][0]
-        start_val = result["valueRanges"][1].get("values", [[""]])[0][0]
-        end_val = result["valueRanges"][2].get("values", [[""]])[0][0]
 
-        dt_start = parse_trial_datetime(date_val, start_val)
-        dt_end = parse_trial_datetime(date_val, end_val)
-        now_utc = datetime.now(timezone.utc)
+    if now_utc < dt_open:
+        log.debug(f"⏸️ Too early: now={now_utc}, earliest allowed={dt_open}")
+        return False
 
-        log.info("✅ INFO: === UTC Verification — Floor Trial Timing ===")
-        log.info(f"✅ INFO: Trial Date (D15): {date_val}")
-        log.info(f"✅ INFO: Start Time (C17): {start_val}")
-        log.info(f"✅ INFO: End Time (D17):   {end_val}")
+    if now_utc > dt_end:
+        log.debug(f"🏁 Past allowed run window: now={now_utc}, latest allowed={dt_end}")
+        return False
 
-        if dt_start is None:
-            log.warning(f"⚠️ WARNING: Invalid start time: '{start_val}'")
-        else:
-            log.info(f"✅ INFO: Parsed UTC Start: {dt_start}")
-
-        if dt_end is None:
-            log.warning(f"⚠️ WARNING: Invalid end time: '{end_val}'")
-        else:
-            log.info(f"✅ INFO: Parsed UTC End:   {dt_end}")
-
-        log.info(f"✅ INFO: Current UTC Now:  {now_utc}")
-
-        status = "unknown"
-        if dt_start and dt_end:
-            if dt_start <= now_utc <= dt_end:
-                log.info("✅ INFO: Floor Trial is IN PROGRESS (UTC)")
-                status = "in_progress"
-            elif now_utc < dt_start:
-                log.info("⏳ INFO: Floor Trial has NOT STARTED yet (UTC)")
-                status = "not_started"
-            else:
-                log.info("🏁 INFO: Floor Trial is FINISHED (UTC)")
-                status = "finished"
-        else:
-            log.warning(
-                "⚠️ WARNING: Could not parse trial date/time — check sheet values"
-            )
-
-        helpers.update_floor_trial_status(service, sheet_id)
-        log.info("✅ INFO: UTC Verification complete — proceeding to queue processing")
-
-        return {
-            "date": date_val,
-            "start": start_val,
-            "end": end_val,
-            "now": now_utc.isoformat(),
-            "status": status,
-        }
-    except Exception as e:
-        log.error(f"❌ ERROR: Error verifying UTC timing: {e}")
-        return None
+    return True
 
 
 # ---------------------------------------------------------------------
@@ -224,7 +98,7 @@ def parse_trial_datetime(date_str: str, time_str: str) -> Optional[datetime]:
     Parse date and time strings into a timezone-aware UTC datetime.
 
     Supports various formats including combined and separate legacy formats.
-    Returns None if parsing fails.
+    Returns None if no recognizable format is found.
     """
     try:
         date_str = (date_str or "").strip()
