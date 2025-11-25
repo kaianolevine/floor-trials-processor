@@ -48,9 +48,7 @@ def import_external_submissions(
     - Marks processed rows (H = X) in source.
     - Updates state.sections['raw_submissions']['data'] and marks dirty.
     """
-    log.info(
-        "import_external_submissions: Starting import from external source (in-memory mode)."
-    )
+    log.debug("import_external_submissions: Starting import from external source.")
 
     try:
         result = (
@@ -100,7 +98,7 @@ def import_external_submissions(
             rows_to_mark.append(idx)
 
         if not new_rows:
-            log.info("No new unprocessed rows to import.")
+            log.debug("No new unprocessed rows to import.")
             return
 
         # Append to in-memory RawSubmissions data

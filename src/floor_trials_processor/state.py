@@ -77,7 +77,7 @@ class SpreadsheetState:
             service: Google Sheets API service instance.
             spreadsheet_id: ID of the spreadsheet to load from.
         """
-        log.info("✅ INFO: Loading spreadsheet state from Google Sheets (enhanced)...")
+        log.debug("✅ INFO: Loading spreadsheet state from Google Sheets (enhanced)...")
 
         section_order = list(self.sections.keys())
         ranges = [self.sections[name]["range"] for name in section_order]
@@ -114,7 +114,7 @@ class SpreadsheetState:
             else:
                 section["data"] = padded
 
-        log.info("✅ INFO: Enhanced state loaded and normalized successfully.")
+        log.info("✅ Enhanced state loaded and normalized successfully.")
 
     def sync_to_sheets(self, service: Any, spreadsheet_id: str) -> None:
         """

@@ -92,7 +92,8 @@ def run_watcher(
                 dt_end,
                 utc_now,
             )
-            log.info("✅ Floor trials heartbeat")
+            timing.check_sheet_should_run(service, spreadsheet_id)
+            log.info("✅ Updated floor trials heartbeat")
             last_step_run["floor_trial_heartbeat"] = now
 
         # Step: Process Submissions
@@ -102,7 +103,7 @@ def run_watcher(
         ):
             processing.import_external_submissions(service, submission_sheet_id, st)
             st.visualize()
-            log.info("✅ Process submissions")
+            log.info("✅ Processed external submissions")
             last_step_run["process_submissions"] = now
 
         # Step: Floor Trials Processing
@@ -120,7 +121,7 @@ def run_watcher(
 
             st.sync_to_sheets(service, spreadsheet_id)
             st.visualize()
-            log.info("✅ Process floor trials actions")
+            log.info("✅ Processed actions, synced sheets")
             last_step_run["process_floor_trials"] = now
 
         time.sleep(1)  # Sleep briefly to avoid tight loop
