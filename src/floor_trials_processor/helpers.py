@@ -55,12 +55,16 @@ def fetch_sheet_values(
         List[List[str]]: List of rows with cell values; empty list on error.
     """
     try:
-        result = (
-            service.spreadsheets()
-            .values()
-            .get(spreadsheetId=spreadsheet_id, range=range_name)
-            .execute()
-        )
+
+        def _get_call():
+            return (
+                service.spreadsheets()
+                .values()
+                .get(spreadsheetId=spreadsheet_id, range=range_name)
+                .execute()
+            )
+
+        result = retry_on_exception(_get_call)
         return result.get("values", [])
     except Exception as e:
         log.error(f"❌ ERROR: Error fetching range {range_name}: {e}")
@@ -79,7 +83,7 @@ def get_single_cell(service, spreadsheet_id: str, cell_range: str) -> str:
     Returns:
         str: The cell value or empty string if unavailable.
     """
-    result = fetch_sheet_values(service, spreadsheet_id, cell_range)
+    result = retry_on_exception(fetch_sheet_values, service, spreadsheet_id, cell_range)
     return result[0][0] if result and result[0] else ""
 
 
@@ -96,7 +100,7 @@ def get_value(service, spreadsheet_id: str, range_: str) -> str:
         str: The first cell value or empty string on error.
     """
     try:
-        rows = fetch_sheet_values(service, spreadsheet_id, range_)
+        rows = retry_on_exception(fetch_sheet_values, service, spreadsheet_id, range_)
         return rows[0][0] if rows and rows[0] else ""
     except Exception as e:
         log.warning(f"⚠️ WARNING: Error getting value from {range_}: {e}")
@@ -130,12 +134,21 @@ def write_sheet_value(
 
     body = {"values": values}
     try:
-        service.spreadsheets().values().update(
-            spreadsheetId=spreadsheet_id,
-            range=sheet_range,
-            valueInputOption=value_input_option,
-            body=body,
-        ).execute()
+
+        def _update_call():
+            return (
+                service.spreadsheets()
+                .values()
+                .update(
+                    spreadsheetId=spreadsheet_id,
+                    range=sheet_range,
+                    valueInputOption=value_input_option,
+                    body=body,
+                )
+                .execute()
+            )
+
+        retry_on_exception(_update_call)
     except Exception as e:
         log.error(
             f"❌ ERROR: write_sheet_value failed to write to {sheet_range}: {e}",
