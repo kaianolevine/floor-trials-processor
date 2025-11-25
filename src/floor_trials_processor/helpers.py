@@ -245,7 +245,7 @@ def clean_and_compact_queue(data: List[List[str]], name: str) -> List[List[str]]
     ]
     empty = [[""] * 5 for _ in range(len(data) - len(non_empty))]
     compacted = non_empty + empty
-    log.info(
+    log.debug(
         f"✅ clean_and_compact_queue: {name} — "
         f"{len(non_empty)} non-empty, {len(empty)} empty rows after cleaning."
     )
@@ -443,3 +443,10 @@ def get_floor_trial_times(service, spreadsheet_id):
     except Exception as e:
         log.error(f"❌ exception: {e}", exc_info=True)
         return {"open": None, "start": None, "end": None}
+
+
+def update_utc_heartbeat(service, spreadsheet_id: str, current_utc_cell: str):
+    """Update UTC heartbeat cell in the sheet."""
+    utc_now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    write_sheet_value(service, spreadsheet_id, current_utc_cell, utc_now_str)
+    log.debug(f"✅ INFO: Heartbeat updated at {current_utc_cell} -> {utc_now_str}")
