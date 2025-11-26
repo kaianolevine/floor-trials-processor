@@ -3,9 +3,8 @@ run-name: Floor Trials Processor (${{ github.event_name }})
 
 on:
   workflow_dispatch:
-  schedule:
-    # Run every hour at minute 00
-    - cron: "0 * * * *"
+  repository_dispatch:
+    types: [start_floor_trials_processor]
 
 concurrency:
   group: floor-trials-watcher
