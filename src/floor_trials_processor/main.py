@@ -40,7 +40,7 @@ def run_watcher(
     current_utc_cell: str,
 ):
     """Run watcher loop, polling sheet and processing changes until duration or stop signal."""
-    log.info("✅ Watcher starting (UTC-based).")
+    log.info("✅ Watcher starting.")
     service = sheets.get_sheets_service()
 
     st = SpreadsheetState()
@@ -93,7 +93,7 @@ def run_watcher(
                 utc_now,
             )
             timing.check_sheet_should_run(service, spreadsheet_id)
-            log.info("✅ Updated floor trials heartbeat")
+            log.debug("✅ Updated floor trials heartbeat")
             last_step_run["floor_trial_heartbeat"] = now
 
         # Step: Process Submissions
@@ -103,7 +103,7 @@ def run_watcher(
         ):
             processing.import_external_submissions(service, submission_sheet_id, st)
             st.visualize()
-            log.info("✅ Processed external submissions")
+            log.debug("✅ Processed external submissions")
             last_step_run["process_submissions"] = now
 
         # Step: Floor Trials Processing
@@ -121,7 +121,7 @@ def run_watcher(
 
             st.sync_to_sheets(service, spreadsheet_id)
             st.visualize()
-            log.info("✅ Processed actions, synced sheets")
+            log.debug("✅ Processed actions, synced sheets")
             last_step_run["process_floor_trials"] = now
 
         time.sleep(1)  # Sleep briefly to avoid tight loop
@@ -138,7 +138,7 @@ def run_watcher(
     )
     helpers.update_utc_heartbeat(service, spreadsheet_id, current_utc_cell)
 
-    log.info("✅ Watcher finished")
+    log.info("✅ Watcher finished.")
 
 
 def main():
