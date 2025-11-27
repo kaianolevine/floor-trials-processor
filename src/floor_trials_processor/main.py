@@ -92,7 +92,7 @@ def run_watcher(
                 dt_end,
                 utc_now,
             )
-            if timing.check_sheet_should_run(service, spreadsheet_id):
+            if not timing.check_sheet_should_run(service, spreadsheet_id):
                 break
             log.debug("✅ Updated floor trials heartbeat")
             last_step_run["floor_trial_heartbeat"] = now
