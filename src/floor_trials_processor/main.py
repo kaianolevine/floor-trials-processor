@@ -70,7 +70,7 @@ def run_watcher(
     ):
 
         now = time.time()
-        floor_trials_in_progress = timing.floor_trial_active(utc_now, dt_open, dt_end)
+        floor_trials_in_progress = timing.floor_trial_active(utc_now, dt_start, dt_end)
         processing.process_raw_submissions_in_memory(
             st, dt_open, dt_end, max_priority_runs
         )
