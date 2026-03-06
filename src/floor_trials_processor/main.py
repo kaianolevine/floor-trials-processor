@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-main.py — Continuous Google Sheets watcher and processor using kaiano.
+main.py — Continuous Google Sheets watcher and processor using kaiano-common-utils.
 
 Runs for a configurable duration, polling a specified sheet range at set intervals.
 Triggers processing when watched sheet values change (e.g., moving rows).
@@ -15,8 +15,8 @@ Main flow:
 import time
 from datetime import datetime, timezone
 
-from kaiano import google_sheets as sheets
-from kaiano import logger as log
+from kaiano_common_utils import google_sheets as sheets
+from kaiano_common_utils import logger as log
 
 import floor_trials_processor.config as config
 import floor_trials_processor.helpers as helpers
