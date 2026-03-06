@@ -9,7 +9,7 @@ packages = [{ include = "floor_trials_processor", from = "src" }]
 
 [tool.poetry.dependencies]
 python = ">=3.10,<4.0"
-kaiano-common-utils = { git = "https://github.com/kaianolevine/kaiano-common-utils.git", branch = "main" }
+kaiano-common-utils = { git = "https://github.com/kaianolevine/kaiano-common-utils.git", tag = "v0.0.73" }
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.2"
